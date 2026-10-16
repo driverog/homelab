@@ -25,7 +25,6 @@ services:
     restart: unless-stopped
     depends_on:
       - mongodb
-      - rag_api
     # No ports: published. Caddy reaches this over `internal`, so nothing on
     # the LAN can bypass the reverse proxy by hitting a host port.
     #
@@ -71,11 +70,6 @@ services:
       # resource, and this repo is public.
       AZURE_BASE_URL: ${AZURE_BASE_URL}
       AZURE_API_KEY: ${AZURE_API_KEY}
-      # rag_api parses .docx/.pdf/.xlsx into text. FULL_CONTEXT makes it inject
-      # the whole document rather than query vector results, but the RAG image
-      # still initializes an embeddings client at startup.
-      RAG_API_URL: http://librechat-rag:8000
-      RAG_USE_FULL_CONTEXT: "true"
       # The code sandbox (code-interpreter/), behind "Run code" and "Upload to
       # Code Environment". Unset, LibreChat falls back to the paid hosted API
       # with no key, and every upload fails with a 401. LibreChat signs a
@@ -141,54 +135,9 @@ services:
     networks:
       - librechat
 
-  # Document parser, not a retrieval system. LibreChat's native fallback is a
-  # plain readFileAsString, which hands the model the raw bytes of a .docx zip
-  # — and .docx/.pdf are accepted uploads either way, so without this container
-  # the failure is silent rather than an error.
-  rag_api:
-    # This image publishes only :latest, so it is pinned by digest instead.
-    image: ghcr.io/danny-avila/librechat-rag-api-dev-lite@sha256:f9f34c8ed6884b0ff9b17387e6174fed737dba29f21622ecb75604d82bc47bf8
-    container_name: librechat-rag
-    restart: unless-stopped
-    depends_on:
-      - vectordb
-    environment:
-      DB_HOST: librechat-vectordb
-      DB_PORT: 5432
-      POSTGRES_DB: librechat_vectors
-      POSTGRES_USER: librechat
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      RAG_PORT: 8000
-      JWT_SECRET: ${JWT_SECRET}
-      # The lite RAG image initializes OpenAI-compatible embeddings even in
-      # full-context mode. Reuse the Foundry v1 resource and its deployment.
-      RAG_OPENAI_API_KEY: ${AZURE_API_KEY}
-      RAG_OPENAI_BASEURL: ${AZURE_BASE_URL}
-      EMBEDDINGS_PROVIDER: openai
-      EMBEDDINGS_MODEL: text-embedding-3-small
-    networks:
-      - librechat
-
-  # A dependency of rag_api, not a feature: rag_api initialises a vector store
-  # at startup and will not boot without one, even though every request here
-  # only ever hits its /text parsing endpoint.
-  vectordb:
-    image: pgvector/pgvector:0.8.0-pg15-trixie
-    container_name: librechat-vectordb
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: librechat_vectors
-      POSTGRES_USER: librechat
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    networks:
-      - librechat
-
 volumes:
   mongo-data:
   meili-data:
-  pgdata:
   uploads:
   images:
   logs:

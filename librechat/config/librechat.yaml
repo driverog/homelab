@@ -15,6 +15,27 @@ version: 1.3.13
 cache: true
 
 endpoints:
+  # Which tools and attachment routes LibreChat offers. Listing them replaces
+  # v0.8.7's default list rather than editing it (packages/data-provider
+  # config.ts, agentsEndpointSchema), so this is the whole set. Left out on
+  # purpose (2026-10-15):
+  #   - context ("Upload as Text") and ocr: documents are read in the code
+  #     sandbox instead, so the rag_api parser and its pgvector store are gone.
+  #   - file_search: vector retrieval, which needs that same RAG service.
+  # programmatic_tools is also absent from upstream's default; it needs a
+  # newer Code Interpreter API than this stack pins.
+  agents:
+    capabilities:
+      - deferred_tools
+      - execute_code
+      - web_search
+      - artifacts
+      - subagents
+      - actions
+      - skills
+      - tools
+      - chain
+
   # Microsoft Foundry, reached through its v1 API — the OpenAI-compatible
   # surface (https://<resource>.openai.azure.com/openai/v1), not the classic
   # per-deployment one. That is why this is a `custom` endpoint rather than
@@ -50,8 +71,8 @@ fileConfig:
     # Keyed `default` rather than by endpoint name: it applies to every
     # endpoint, so renaming the one above cannot silently drop these limits.
     default:
-      # Images go straight to the vision model; Office and PDF files are parsed
-      # by the rag_api container first (see the compose file).
+      # Images and PDFs can go straight to the model ("Upload to Provider");
+      # anything else goes to the code sandbox ("Upload to Code Environment").
       fileLimit: 10
       fileSizeLimit: 20 # MB
       totalSizeLimit: 50 # MB
