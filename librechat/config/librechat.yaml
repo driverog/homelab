@@ -74,6 +74,42 @@ endpoints:
       titleModel: "current_model"
       modelDisplayLabel: "Foundry"
 
+# A simple chat: people pick from the agents shared with them, and nothing
+# else. The model menu offers ChatBot plus the "Agents" endpoint, which LibreChat
+# fills per user with exactly the agents that user can access (ACL-filtered), so
+# sharing a new agent in the UI is all it takes, with no commit per agent. Foundry
+# models stay reachable only *through* agents, whose model is chosen in the
+# Agent Builder.
+#
+# This shapes the UI and is not enforced by the server: without
+# `enforce: true` a hand-written API request can still name Foundry directly.
+# Enforcing it would mean listing every agent here, which defeats the point.
+modelSpecs:
+  # `prioritize` (default true) keeps a spec selected, so new chats open on
+  # ChatBot rather than a bare endpoint.
+  addedEndpoints: [agents]
+  list:
+    - name: chatbot
+      label: ChatBot
+      default: true
+      # Agents carry their own model and settings; a spec pointing at one sets
+      # nothing else (per the modelSpecs docs). The ID is an opaque handle, not
+      # a credential: access is still decided by the agent's sharing settings.
+      preset:
+        endpoint: agents
+        agent_id: agent_HXSFAW0Zhdm9HMnaqd5Ch
+
+interface:
+  # Nothing to tune from the chat box; tuning belongs to the agent.
+  presets: false
+  parameters: false
+  # Seeds the USER role's agent permissions at startup (v0.8.8 applies these to
+  # USER only; ADMIN keeps create and share). Without this, anyone could build
+  # an agent on any model and walk around the menu above.
+  agents:
+    use: true
+    create: false
+
 # Inline memory only: the chat model itself calls memory tools to save and
 # recall what it should remember about you, and Settings > Personalization can
 # switch it off. The section must exist for the `memory` capability to work

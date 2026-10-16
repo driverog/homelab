@@ -530,6 +530,20 @@ start of a session; update when a concept lands or a new gap appears.
   starting with the endpoint that carries every chat. Rule of thumb: when
   inserting a top-level block into YAML, read the lines *after* it, because
   indentation decides who owns them. (2026-10-15)
+- **"Users may only use the agents I share" has two strengths, and only the
+  weaker one is free to run** — `modelSpecs.enforce: true` makes the *server*
+  reject any chat that doesn't name a listed spec, but then every agent must
+  be listed in `librechat.yaml`, a commit per shared agent. Instead, the
+  menu now offers ChatBot plus the `agents` endpoint, which LibreChat fills
+  per user from the agent's sharing settings. Sharing an agent becomes the
+  whole workflow, and the price is that a hand-written API call could still
+  name Foundry directly. That's fine for a few trusted people, and worth
+  knowing before anyone untrusted gets an account. The other half is
+  `interface.agents.create: false`: without it, the USER role could build an
+  agent on any model and walk around the menu. v0.8.8 also has per-role
+  config overrides stored in MongoDB (`/api/admin/config/role/<ROLE>`; every
+  section except `filters` is overridable). They weren't needed here, and
+  they'd be config that lives outside git. (2026-10-16)
 
 ## Shaky
 
