@@ -1,0 +1,292 @@
+# Code Interpreter — the sandbox behind LibreChat's "Run code" tool and its
+# "Upload to Code Environment" attachment option. Deployed by Komodo from this
+# repo on a GitHub webhook, like librechat/.
+#
+# Derived from the compose file of
+# https://github.com/LibreChat-AI/code-interpreter at v1.10.3, switched from
+# building to the prebuilt GHCR images, out of local mode and onto LibreChat's
+# signed tokens. Upstream's file is a development setup: it ships no auth,
+# publicly known signing keys, MinIO's default credentials and a host port for
+# every service. None of that survives here.
+#
+# Its own stack rather than part of librechat/: these containers run code a
+# model wrote, so they get a private network nothing else joins, and a
+# LibreChat deploy never restarts them. LibreChat reaches exactly one container
+# (`codeapi`) over the `librechat-codeapi` network, which those two alone join.
+#
+# Isolation is upstream's hardened mode: every execution boots a libkrun
+# microVM with its own guest kernel and runs NsJail inside it. That needs
+# /dev/kvm on the host. Without KVM the runner falls back to NsJail on the host
+# kernel, which upstream calls fit for local development only.
+
+# Pinned for the same reason as librechat/: the project name prefixes every
+# volume, and a different one silently starts from empty ones.
+name: code-interpreter
+
+# Every ghcr.io/librechat-ai image below is one commit's build: v1.10.3 is
+# 68c9f931b67fea8d8d96eb64b869dc6d70d04466. Upstream publishes no `latest` and
+# no release tags on images, only `sha-<commit>`, and those are written once.
+# Bump all six together: the services share queue and manifest formats.
+#
+# Not v1.10.4: its KVM runner fails every execution inside the guest with
+# "Cannot find module '/sandbox_api/.build/anonymous-pipes.node'" (upstream
+# issues #320 and #329, reproduced here 2026-10-15). v1.10.3 is the same code
+# minus that one commit. Move past it only to a release that closes those.
+
+x-redis: &redis
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+services:
+  # The only container LibreChat talks to. It verifies LibreChat's token,
+  # queues the job in Redis and proxies file transfers.
+  api:
+    image: ghcr.io/librechat-ai/code-interpreter-api:sha-68c9f931b67fea8d8d96eb64b869dc6d70d04466
+    container_name: codeapi
+    restart: unless-stopped
+    environment:
+      <<: *redis
+      SERVICE_PORT: 3112
+      # Local mode skips authentication entirely. Off, every request must
+      # carry a token signed by LibreChat's private key; this side holds only
+      # the public half, so a compromised sandbox cannot mint its own.
+      LOCAL_MODE: "false"
+      # Must be on in every service, not just the runner: off, the worker
+      # sends jobs without the signed egress grant the runner requires, and
+      # every execution fails with "X-CodeAPI-Execution-Manifest is required"
+      # (service/src/sandbox-egress.ts).
+      CODEAPI_HARDENED_SANDBOX_MODE: "true"
+      CODEAPI_AUTH_PROVIDER: librechat-jwt
+      CODEAPI_JWT_ISSUER: librechat
+      CODEAPI_JWT_AUDIENCE: codeapi
+      CODEAPI_JWT_ALLOWED_ALGS: EdDSA
+      CODEAPI_JWT_CLOCK_SKEW_SECONDS: 30
+      CODEAPI_JWT_MAX_TTL_SECONDS: 300
+      CODEAPI_JWT_JWKS_JSON: ${CODEAPI_JWT_JWKS_JSON}
+      # LibreChat here has no tenants; both sides must agree on this sentinel.
+      CODEAPI_JWT_SINGLE_TENANT_ID: legacy
+      # The API always serves the remote-bridge enrollment routes, even though
+      # nothing here uses a remote bridge, and hardened mode refuses to start
+      # unless they are in `paired` mode behind a strong token
+      # (service/src/secure-startup.ts). Paired means a worker can enroll only
+      # by presenting this token, which never leaves the host .env.
+      CODEAPI_BRIDGE_TOKEN: ${CODEAPI_BRIDGE_TOKEN}
+      CODEAPI_BRIDGE_AUTH_MODE: paired
+      CODEAPI_BRIDGE_DYNAMIC_WORKERS: "true"
+      CODEAPI_INTERNAL_SERVICE_TOKEN: ${CODEAPI_INTERNAL_SERVICE_TOKEN}
+      CODEAPI_HTTP_JSON_LIMIT: 50mb
+      SANDBOX_ENDPOINT: http://sandbox-runner:2000/api/v2
+      EGRESS_GATEWAY_URL: http://egress_gateway:3190
+      FILE_SERVER_URL: http://file_server:3000
+      TOOL_CALL_SERVER_URL: http://tool_call_server:3033
+    depends_on:
+      - redis
+      - tool_call_server
+    networks:
+      - code-interpreter
+      - librechat-codeapi
+
+  # Takes jobs off the Redis queue, signs an execution manifest for each and
+  # hands it to the sandbox runner.
+  service-worker:
+    image: ghcr.io/librechat-ai/code-interpreter-worker:sha-68c9f931b67fea8d8d96eb64b869dc6d70d04466
+    container_name: codeapi-worker
+    restart: unless-stopped
+    environment:
+      <<: *redis
+      LOCAL_MODE: "false"
+      CODEAPI_HARDENED_SANDBOX_MODE: "true"
+      CODEAPI_AUTH_PROVIDER: librechat-jwt
+      CODEAPI_JWT_SINGLE_TENANT_ID: legacy
+      CODEAPI_BRIDGE_TOKEN: ${CODEAPI_BRIDGE_TOKEN}
+      CODEAPI_BRIDGE_AUTH_MODE: paired
+      CODEAPI_BRIDGE_DYNAMIC_WORKERS: "true"
+      CODEAPI_INTERNAL_SERVICE_TOKEN: ${CODEAPI_INTERNAL_SERVICE_TOKEN}
+      # Signs each job's manifest; the runner holds the public half and refuses
+      # anything unsigned. Upstream's compose defaults this to a key published
+      # in its own repo.
+      CODEAPI_EXECUTION_MANIFEST_PRIVATE_KEY: ${CODEAPI_EXECUTION_MANIFEST_PRIVATE_KEY}
+      SANDBOX_ENDPOINT: http://sandbox-runner:2000/api/v2
+      EGRESS_GATEWAY_URL: http://egress_gateway:3190
+      # Sized for one user on a box that runs everything else too. Each
+      # running job is a microVM of LAUNCHER_RAM_MIB (see sandbox-runner).
+      PYTHON_CONCURRENCY: 1
+      OTHER_CONCURRENCY: 2
+      WORKER_HEALTH_PORT: 3113
+    depends_on:
+      redis:
+        condition: service_started
+      sandbox-runner:
+        condition: service_healthy
+    networks:
+      - code-interpreter
+
+  # The only network path out of a sandbox, and it leads only to the file
+  # server and the tool-call server. Sandboxed code has no internet.
+  egress_gateway:
+    image: ghcr.io/librechat-ai/code-interpreter-egress-gateway:sha-68c9f931b67fea8d8d96eb64b869dc6d70d04466
+    container_name: codeapi-egress-gateway
+    restart: unless-stopped
+    environment:
+      <<: *redis
+      SERVICE_NAME: egress-gateway
+      CODEAPI_EGRESS_LEDGER_REQUIRED: "true"
+      EGRESS_GATEWAY_PORT: 3190
+      EGRESS_GATEWAY_FILE_SERVER_URL: http://file_server:3000
+      EGRESS_GATEWAY_TOOL_CALL_SERVER_URL: http://tool_call_server:3033
+      EGRESS_GATEWAY_MAX_TOOL_CALL_BYTES: 1048576
+      CODEAPI_EGRESS_GRANT_SECRET: ${CODEAPI_EGRESS_GRANT_SECRET}
+      CODEAPI_INTERNAL_SERVICE_TOKEN: ${CODEAPI_INTERNAL_SERVICE_TOKEN}
+    depends_on:
+      - file_server
+      - tool_call_server
+      - redis
+    networks:
+      - code-interpreter
+
+  tool_call_server:
+    image: ghcr.io/librechat-ai/code-interpreter-tool-call-server:sha-68c9f931b67fea8d8d96eb64b869dc6d70d04466
+    container_name: codeapi-tool-call-server
+    restart: unless-stopped
+    environment:
+      <<: *redis
+      TOOL_CALL_SERVER_PORT: 3033
+      TOOL_CALL_REQUEST_TIMEOUT: 300000
+      TOOL_CALL_SESSION_EXPIRY: 600
+      CODEAPI_INTERNAL_SERVICE_TOKEN: ${CODEAPI_INTERNAL_SERVICE_TOKEN}
+    depends_on:
+      - redis
+    networks:
+      - code-interpreter
+
+  # Boots the microVMs. Not privileged: /dev/kvm is the one host device it
+  # gets. The KVM image bakes Python, Node and Bun into the guest root image,
+  # so upstream's ./data/pkgs bind mount (used only by direct NsJail mode) is
+  # gone, along with the directory Docker would create for it in the checkout.
+  sandbox-runner:
+    image: ghcr.io/librechat-ai/code-interpreter-sandbox-runner:sha-68c9f931b67fea8d8d96eb64b869dc6d70d04466
+    container_name: codeapi-sandbox-runner
+    restart: unless-stopped
+    privileged: false
+    devices:
+      - /dev/kvm:/dev/kvm
+    environment:
+      KVM_ENABLED: "true"
+      # The KVM path must not hand a host directory to libkrun as a
+      # long-lived virtio-fs share; upstream disables it the same way.
+      LAUNCHER_PACKAGES_HOST: /disabled-host-packages
+      CODEAPI_HARDENED_SANDBOX_MODE: "true"
+      EGRESS_GATEWAY_URL: http://egress_gateway:3190
+      SANDBOX_EXECUTE_BODY_LIMIT: 50mb
+      SANDBOX_PACKAGES_DIRECTORY: /pkgs
+      # LibreChat's LIBRECHAT_CODE_SANDBOX_OUTPUT_MAX_SIZE must match if this
+      # ever changes; v0.8.7 assumes this default.
+      SANDBOX_OUTPUT_MAX_SIZE: 65536
+      # Two microVMs at 2 GiB each is the worst case this stack can add to the
+      # host's memory. Raise together with the worker's concurrency.
+      SANDBOX_MAX_CONCURRENT_JOBS: 2
+      LAUNCHER_VCPUS: 2
+      LAUNCHER_RAM_MIB: 2048
+      SANDBOX_PER_JOB_UIDS: "true"
+      SANDBOX_JOB_UID_BASE: 200000
+      SANDBOX_JOB_GID_BASE: 200000
+      SANDBOX_WORKSPACE_REAPER_MAX_AGE_SECONDS: 3600
+      SANDBOX_RUN_TIMEOUT: 300000
+      SANDBOX_RUN_CPU_TIME: 300000
+      SANDBOX_COMPILE_TIMEOUT: 30000
+      LAUNCHER_LOG_LEVEL: 3
+      SANDBOX_ALLOWED_LOCAL_NETWORK_PORT: 3190
+      SANDBOX_FORWARD_TARGET: egress_gateway:3190
+      SANDBOX_REQUIRE_EGRESS_MANIFEST: "true"
+      SANDBOX_EXECUTION_MANIFEST_PUBLIC_KEY: ${SANDBOX_EXECUTION_MANIFEST_PUBLIC_KEY}
+      # Guest clock drift past the manifests' 30 s tolerance fails every
+      # execution with "not_yet_valid"; this makes the healthcheck say so.
+      SANDBOX_RUNNER_CLOCK_SKEW_LIVENESS_LIMIT_SECONDS: 10
+      SANDBOX_RUNNER_HEALTHCHECK_TIMEOUT_SECONDS: 2
+    depends_on:
+      egress_gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sandbox-runner-healthcheck.sh"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 20s
+    networks:
+      - code-interpreter
+
+  # Uploaded inputs and generated outputs, kept in S3-compatible storage.
+  file_server:
+    image: ghcr.io/librechat-ai/code-interpreter-file-server:sha-68c9f931b67fea8d8d96eb64b869dc6d70d04466
+    container_name: codeapi-file-server
+    restart: unless-stopped
+    environment:
+      <<: *redis
+      FILE_SERVER_PORT: 3000
+      # Variables are named for MinIO, but any S3 API works; the bucket is
+      # created on first start.
+      MINIO_ENDPOINT: storage
+      MINIO_PORT: 4566
+      MINIO_USE_SSL: "false"
+      MINIO_BUCKET: codeapi
+      MINIO_ACCESS_KEY: ${STORAGE_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${STORAGE_SECRET_KEY}
+      CODEAPI_INTERNAL_SERVICE_TOKEN: ${CODEAPI_INTERNAL_SERVICE_TOKEN}
+    depends_on:
+      - storage
+      - redis
+    networks:
+      - code-interpreter
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: codeapi-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - code-interpreter
+
+  # Floci's S3 instead of upstream's MinIO, which stopped publishing community
+  # images. Floci is a whole AWS emulator; only S3 is used. No Docker socket
+  # is mounted, so the services that would launch containers (Lambda, ECS,
+  # RDS, the console sidecar) cannot, and the in-process rest are reachable
+  # only from this private network.
+  #
+  # Its credentials are not an access control: even with
+  # FLOCI_AUTH_VALIDATE_SIGNATURES on, Floci accepts `test`/`test` and
+  # unsigned requests (docs/services/s3.md, 2.3.0). The boundary is the
+  # network: only the file server talks to this container, and sandboxed code
+  # can reach nothing but the egress gateway. The generated keys only keep
+  # the habit right, as in the August floci evaluation.
+  storage:
+    image: floci/floci:2.3.0
+    container_name: codeapi-storage
+    restart: unless-stopped
+    environment:
+      FLOCI_HOSTNAME: storage
+      FLOCI_STORAGE_MODE: persistent
+      FLOCI_STORAGE_PERSISTENT_PATH: /app/data
+      FLOCI_SERVICES_UI_ENABLED: "false"
+    volumes:
+      - storage-data:/app/data
+    networks:
+      - code-interpreter
+
+volumes:
+  redis-data:
+  storage-data:
+
+networks:
+  # `internal: true` gives this network no route off the host. Nothing in
+  # this stack needs one: images are pulled by the Docker daemon, not by the
+  # containers, and sandboxed code is meant to have no network at all.
+  code-interpreter:
+    name: code-interpreter
+    internal: true
+  # LibreChat <-> codeapi only. Created by scripts/bootstrap.sh so that
+  # either stack can start first.
+  librechat-codeapi:
+    external: true

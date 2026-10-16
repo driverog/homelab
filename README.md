@@ -103,6 +103,7 @@ deploy — CI's or Komodo's — can take down the route used to repair it.
 | [tunnel/](tunnel/) | cloudflared | The Cloudflare Tunnel every published service is reached through. Host-managed, never deployed — a bad deploy of the stack holding the tunnel would remove the path used to repair it |
 | [komodo/](komodo/) | Komodo Core + Periphery + MongoDB | The control plane: clones this repo on the server and deploys every stack above from it. Host-managed, never CI-deployed |
 | [librechat/](librechat/) | LibreChat, MongoDB, Meilisearch, RAG parser + pgvector | Chat front-end over a Microsoft Foundry deployment. A Komodo-owned stack with checkout-mounted config; secret delivery remains under evaluation |
+| [code-interpreter/](code-interpreter/) | LibreChat Code Interpreter v1.10.3 (API, worker, KVM sandbox runner, egress gateway, file and tool-call servers), Redis, Floci S3 | The sandbox behind LibreChat's "Run code" and "Upload to Code Environment": each execution runs in its own libkrun microVM with no network. Only LibreChat can reach it, over `librechat-codeapi`. Deployed by Komodo from this repo on a GitHub webhook |
 
 Two more stacks run on the server but are deliberately **not** defined here.
 The first,
@@ -170,7 +171,8 @@ Highlights:
 ├── tunnel/           docker-compose.yml (cloudflared), .env.example
 ├── komodo/           docker-compose.yml (Core + Periphery + Mongo), registries.config.toml, .env.example
 ├── librechat/        docker-compose.yml, config/librechat.yaml, .env.example (deployed by Komodo)
-└── scripts/          bootstrap.sh, pre-commit (gitleaks)
+├── code-interpreter/ docker-compose.yml, .env.example (LibreChat's code sandbox, deployed by Komodo)
+└── scripts/          bootstrap.sh, codeapi-secrets.sh, pre-commit (gitleaks)
 ```
 
 Conventions:
@@ -226,8 +228,10 @@ Conventions:
    (`webhook_force_deploy`, `post_deploy` restarts for processes that don't
    hot-reload their config) lives in that file too. What remains by hand:
    copy each stack's `.env.example` to
-   `/etc/komodo/stacks/<stack>/<stack>/.env` and fill it in, deploy each
-   Stack, and add the GitHub webhooks — one per stack at
+   `/etc/komodo/stacks/<stack>/<stack>/.env` and fill it in (except
+   `code-interpreter`'s, and the Code Interpreter half of `librechat`'s: run
+   `scripts/codeapi-secrets.sh` on those two files instead, since they share
+   one keypair), deploy each Stack, and add the GitHub webhooks — one per stack at
    `<KOMODO_URL>/listener/github/stack/<name>/deploy` (secret:
    `KOMODO_WEBHOOK_SECRET`, from `komodo/.env` — CI does not hold it, only
    GitHub's per-stack webhooks use it). The sync needs no webhook: the

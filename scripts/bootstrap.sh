@@ -24,6 +24,10 @@ create_networks() {
   # The monitoring stack joins the trakt bot's network (the bot deploys itself
   # from its own repo's CI); pre-create it so monitoring can start first.
   docker network inspect trakt-tg-bot_aspire >/dev/null 2>&1 || docker network create trakt-tg-bot_aspire
+  # LibreChat <-> the code sandbox's API, and nothing else. --internal: neither
+  # end needs a route off the host through it. Pre-created so either of the
+  # two stacks can start first.
+  docker network inspect librechat-codeapi >/dev/null 2>&1 || docker network create --internal librechat-codeapi
 }
 
 check_env_files() {
