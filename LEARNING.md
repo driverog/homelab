@@ -530,21 +530,27 @@ start of a session; update when a concept lands or a new gap appears.
   starting with the endpoint that carries every chat. Rule of thumb: when
   inserting a top-level block into YAML, read the lines *after* it, because
   indentation decides who owns them. (2026-10-15)
-- **"Users may only use the agents I share" has two strengths, and only the
-  weaker one is free to run** — `modelSpecs.enforce: true` makes the *server*
-  reject any chat that doesn't name a listed spec, but then every agent must
-  be listed in `librechat.yaml`, a commit per shared agent. Instead, the
-  menu offers only the `agents` endpoint, which LibreChat fills per user
-  from the agent's sharing settings; the spec list stays empty, so no agent
-  ID lives in git (a default agent would have needed one). Sharing an agent becomes the
-  whole workflow, and the price is that a hand-written API call could still
-  name Foundry directly. That's fine for a few trusted people, and worth
-  knowing before anyone untrusted gets an account. The other half is
-  `interface.agents.create: false`: without it, the USER role could build an
-  agent on any model and walk around the menu. v0.8.8 also has per-role
-  config overrides stored in MongoDB (`/api/admin/config/role/<ROLE>`; every
-  section except `filters` is overridable). They weren't needed here, and
-  they'd be config that lives outside git. (2026-10-16)
+- **"Users may only use the agents I share" took three tries, and each
+  failure was something a schema check couldn't see** — `modelSpecs.enforce`
+  is the server-enforced version but needs every agent listed in the YAML,
+  so the menu is shaped instead: `addedEndpoints: [agents]` offers only the
+  Agents entry, which LibreChat fills per user from each agent's sharing
+  settings. #23 shipped that with an empty `list` and it did nothing: v0.8.8
+  *discards the whole `modelSpecs` section when the list is empty*
+  (`processModelSpecs` returns early), so `/api/config` sent
+  `modelSpecs: null` and the menu still offered Foundry. The fix is one
+  placeholder spec with `showInMenu: false`. It keeps the section alive,
+  `/api/config` strips it (`excludeHiddenModelSpecs`), and it names no
+  agent. #23 also set `interface.agents.create: false`, which v0.8.8 writes
+  into both USER and ADMIN on every startup (`updateInterfacePermissions`).
+  That took Agent Builder away from the admin, so agent permissions now live
+  in the roles collection only. And an "Azure OpenAI" entry nobody
+  configured turned out to be LibreChat's built-in Azure endpoint, which
+  enables itself whenever a variable named `AZURE_API_KEY` exists, so the
+  key reaches LibreChat as `FOUNDRY_API_KEY`. The lesson: for UI behaviour,
+  test what the browser receives (`/api/config`), not just what the YAML
+  parses to. Still UI-only: a hand-written API call can name Foundry
+  directly. (2026-10-16)
 
 ## Shaky
 
