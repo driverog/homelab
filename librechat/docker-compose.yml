@@ -4,7 +4,7 @@
 # .github/workflows/deploy.yml: if it ever appears there, CI and Komodo would
 # both be driving the same compose project.
 #
-# Derived from https://github.com/danny-avila/LibreChat/blob/v0.8.7/docker-compose.yml
+# Derived from https://github.com/LibreChat-AI/LibreChat/blob/v0.8.8/docker-compose.yml
 # with every relative state bind mount removed. Komodo runs compose from its own
 # clone of this repo, and Docker silently creates a *directory* for a missing
 # bind source — upstream's `./.env`, `./data-node` and `./uploads` mounts would
@@ -20,7 +20,10 @@ name: librechat
 
 services:
   api:
-    image: ghcr.io/danny-avila/librechat:v0.8.7
+    # The project moved to the LibreChat-AI organisation; v0.8.8 and later are
+    # published only under this name, while ghcr.io/danny-avila/librechat
+    # stops at v0.8.7.
+    image: ghcr.io/librechat-ai/librechat:v0.8.8
     container_name: librechat
     restart: unless-stopped
     depends_on:

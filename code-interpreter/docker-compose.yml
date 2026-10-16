@@ -183,7 +183,7 @@ services:
       SANDBOX_EXECUTE_BODY_LIMIT: 50mb
       SANDBOX_PACKAGES_DIRECTORY: /pkgs
       # LibreChat's LIBRECHAT_CODE_SANDBOX_OUTPUT_MAX_SIZE must match if this
-      # ever changes; v0.8.7 assumes this default.
+      # ever changes; LibreChat assumes this default.
       SANDBOX_OUTPUT_MAX_SIZE: 65536
       # Two microVMs at 2 GiB each is the worst case this stack can add to the
       # host's memory. Raise together with the worker's concurrency.
