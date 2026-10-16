@@ -9,15 +9,18 @@
 #
 # Schema reference: https://www.librechat.ai/docs/configuration/librechat_yaml
 
-# Required. Matches the CONFIG_VERSION LibreChat v0.8.7 ships with; a newer
-# app version may expect a newer value here.
-version: 1.3.13
+# Required. Matches the CONFIG_VERSION LibreChat v0.8.8 ships with; a newer
+# app version may expect a newer value here. Read the config changelogs
+# between the two (librechat.ai/changelog/config_v1.3.x) before bumping it.
+version: 1.3.17
 cache: true
 
 endpoints:
   # Which tools and attachment routes LibreChat offers. Listing them replaces
-  # v0.8.7's default list rather than editing it (packages/data-provider
-  # config.ts, agentsEndpointSchema), so this is the whole set. Left out on
+  # the release's default list rather than editing it (packages/data-provider
+  # config.ts, agentsEndpointSchema), so this is the whole set, and a new
+  # default capability in a future release stays off until it is added here.
+  # Compare against `defaultAgentCapabilities` on every upgrade. Left out on
   # purpose (2026-10-15):
   #   - context ("Upload as Text") and ocr: documents are read in the code
   #     sandbox instead, so the rag_api parser and its pgvector store are gone.
@@ -33,8 +36,22 @@ endpoints:
       - subagents
       - actions
       - skills
+      # New defaults in v0.8.8, kept on purpose: the model can save and recall
+      # memories about you (see `memory:` below), and can stop mid-task to
+      # ask you a question instead of guessing.
+      - memory
+      - ask_user_question
       - tools
       - chain
+
+# Inline memory only: the chat model itself calls memory tools to save and
+# recall what it should remember about you, and Settings > Personalization can
+# switch it off. The section must exist for the `memory` capability to work
+# (an absent section reads as disabled). No `agent:` block on purpose: that
+# is v0.8.8's opt-in automatic extraction, a second model pass after every
+# message, and it would need a Foundry deployment name committed here.
+memory:
+  personalize: true
 
   # Microsoft Foundry, reached through its v1 API — the OpenAI-compatible
   # surface (https://<resource>.openai.azure.com/openai/v1), not the classic
@@ -73,6 +90,10 @@ fileConfig:
     default:
       # Images and PDFs can go straight to the model ("Upload to Provider");
       # anything else goes to the code sandbox ("Upload to Code Environment").
+      # v0.8.8 replaces that menu with automatic routing whose fallback for
+      # other files is extracted text, the `context` path removed above.
+      # Keep the menu.
+      legacyFileUploadUX: true
       fileLimit: 10
       fileSizeLimit: 20 # MB
       totalSizeLimit: 50 # MB

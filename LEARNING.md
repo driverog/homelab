@@ -506,6 +506,21 @@ start of a session; update when a concept lands or a new gap appears.
   editing it. So turning one capability off means writing out every one you
   keep. The schema in the running container validated the result.
   (2026-10-15)
+- **An explicit capability list freezes the defaults: v0.8.8 proved it the
+  same day** — v0.8.8 added `memory` and `ask_user_question` to LibreChat's
+  defaults, and our hand-written list would have kept both off without a
+  word. Every upgrade now means comparing the list with
+  `defaultAgentCapabilities`. Three more things the v0.8.8 upgrade taught.
+  First, an image *name* can move: the project changed GitHub organisation,
+  and `ghcr.io/danny-avila/librechat` simply stops at v0.8.7. A tag bump alone
+  would have failed to pull. Second, read a migration's dry run before
+  planning downtime: the tenant-index migration "may be needed by
+  single-tenant deployments too", but against this database it planned 0
+  drops. Third, `memory` comes in two parts: inline tools need only a
+  `memory:` section, while the automatic extraction agent needs a deployment
+  name and stayed off. Zod silently strips keys it doesn't know, so the
+  schema check also asserted that `legacyFileUploadUX` and `memory` survived
+  parsing. (2026-10-15)
 
 ## Shaky
 
