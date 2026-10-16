@@ -534,8 +534,9 @@ start of a session; update when a concept lands or a new gap appears.
   weaker one is free to run** — `modelSpecs.enforce: true` makes the *server*
   reject any chat that doesn't name a listed spec, but then every agent must
   be listed in `librechat.yaml`, a commit per shared agent. Instead, the
-  menu now offers ChatBot plus the `agents` endpoint, which LibreChat fills
-  per user from the agent's sharing settings. Sharing an agent becomes the
+  menu offers only the `agents` endpoint, which LibreChat fills per user
+  from the agent's sharing settings; the spec list stays empty, so no agent
+  ID lives in git (a default agent would have needed one). Sharing an agent becomes the
   whole workflow, and the price is that a hand-written API call could still
   name Foundry directly. That's fine for a few trusted people, and worth
   knowing before anyone untrusted gets an account. The other half is
