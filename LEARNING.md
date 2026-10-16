@@ -462,6 +462,37 @@ start of a session; update when a concept lands or a new gap appears.
   an incident ever reads as "the container looks fine but the service is
   slow" — that is precisely the gap an exporter fills. (2026-09-07)
 
+- **Two services can trust each other with a keypair instead of a shared
+  secret** — LibreChat signs a five-minute JWT per code request with an
+  Ed25519 *private* key; the Code Interpreter API holds only the *public* key
+  (as a JWK set) and can verify but never mint. Compare `METRICS_SECRET`,
+  which both ends hold whole, so a leak on either side is a full compromise.
+  The cost is that both halves must come from one generation run, which is
+  why `scripts/codeapi-secrets.sh` writes both host `.env` files at once.
+  (2026-10-15)
+- **"Healthy" said nothing about code execution, again** — the Code
+  Interpreter v1.10.4 runner passed every healthcheck and failed every single
+  execution inside its microVM (`anonymous-pipes.node` missing from the guest
+  image; upstream #320/#329). Only a real upload + `/exec` through
+  LibreChat's own code found it, and found two config gaps of ours before it:
+  hardened mode must be on in the API and worker too, not just the runner,
+  or the worker sends jobs without the signed grant the runner demands.
+  Pinned to v1.10.3, the same code minus the one breaking commit.
+  (2026-10-15)
+- **`internal: true` on a Docker network removes the route off the host** —
+  containers still resolve and reach each other by name, but nothing on that
+  network can open a connection to the internet. The code sandbox's private
+  network and the `librechat-codeapi` link both use it: nothing there needs
+  outbound traffic, because the *daemon* pulls images, not the containers.
+  Sandboxed Python trying `urlopen("http://example.com")` gets a DNS failure.
+  (2026-10-15)
+- **Floci came back as just an S3 server** — the August evaluation dropped it
+  as an ECS host. Here it replaces MinIO (whose community images are gone)
+  with no Docker socket, so none of its container-launching services can do
+  anything. Its credentials are still not an access control — `test`/`test`
+  and unsigned requests pass even with signature validation on — so the
+  network is the boundary, as it was in August. (2026-10-15)
+
 ## Shaky
 
 - Komodo's Resource Sync (stacks declared as TOML in the repo) — deliberately
@@ -512,6 +543,12 @@ start of a session; update when a concept lands or a new gap appears.
   It deploys from its own repo, so the change belongs there.
 - Delete the `docker-registry` deploy webhook on the GitHub repo — it points at
   a Stack Komodo no longer has.
+- Code Interpreter retention: the sandbox's file server never deletes what it
+  stores in Floci (only its Redis keys expire), and Floci appears to store
+  S3 lifecycle rules without enforcing them — unverified. Decide how long
+  uploaded and generated files should live, then verify whatever enforces it.
+- Move `code-interpreter/` off v1.10.3 once upstream ships a release that
+  closes #320/#329, re-running a real `/exec` before calling it done.
 
 ## Open questions
 

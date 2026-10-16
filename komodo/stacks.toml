@@ -103,6 +103,19 @@ post_deploy.shell_mode = false
 ##
 
 [[stack]]
+name = "code-interpreter"
+[stack.config]
+server = "Local"
+project_name = "code-interpreter"
+repo = "lorainemg/homelab"
+file_paths = ["code-interpreter/docker-compose.yml"]
+# No links: nothing here is reachable from outside its Docker networks. Only
+# LibreChat talks to it. No config is mounted from the checkout either, so
+# Komodo's default compose-file diff is enough and no forced deploy is needed.
+
+##
+
+[[stack]]
 name = "monitoring"
 [stack.config]
 server = "Local"

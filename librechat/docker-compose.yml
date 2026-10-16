@@ -76,6 +76,22 @@ services:
       # still initializes an embeddings client at startup.
       RAG_API_URL: http://librechat-rag:8000
       RAG_USE_FULL_CONTEXT: "true"
+      # The code sandbox (code-interpreter/), behind "Run code" and "Upload to
+      # Code Environment". Unset, LibreChat falls back to the paid hosted API
+      # with no key, and every upload fails with a 401. LibreChat signs a
+      # five-minute token per request with the private key below; the sandbox
+      # holds only the public half. Both halves come from
+      # scripts/codeapi-secrets.sh, and the issuer, audience and tenant must
+      # match code-interpreter/docker-compose.yml.
+      LIBRECHAT_CODE_BASEURL: http://codeapi:3112/v1
+      CODEAPI_AUTH_PROVIDER: librechat-jwt
+      CODEAPI_JWT_ALGORITHM: EdDSA
+      CODEAPI_JWT_KID: ${CODEAPI_JWT_KID}
+      CODEAPI_JWT_PRIVATE_JWK_JSON: ${CODEAPI_JWT_PRIVATE_JWK_JSON}
+      CODEAPI_JWT_ISSUER: librechat
+      CODEAPI_JWT_AUDIENCE: codeapi
+      CODEAPI_JWT_SINGLE_TENANT_ID: legacy
+      CODEAPI_JWT_TTL_SECONDS: 300
     volumes:
       # Relative to this file, resolved inside Komodo's clone. Mount the
       # directory, not the file: git replaces files during a pull, and a
@@ -90,6 +106,8 @@ services:
       # resolve this container by name. Nothing else joins `internal`.
       - librechat
       - internal
+      # Reaches exactly one container: the code sandbox's API.
+      - librechat-codeapi
 
   mongodb:
     image: mongo:8.0.20
@@ -181,3 +199,5 @@ networks:
     name: librechat
   internal:
     external: true # shared with the other stacks; created by scripts/bootstrap.sh
+  librechat-codeapi:
+    external: true # LibreChat <-> code-interpreter only; created by scripts/bootstrap.sh
