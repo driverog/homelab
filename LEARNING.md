@@ -518,9 +518,18 @@ start of a session; update when a concept lands or a new gap appears.
   single-tenant deployments too", but against this database it planned 0
   drops. Third, `memory` comes in two parts: inline tools need only a
   `memory:` section, while the automatic extraction agent needs a deployment
-  name and stayed off. Zod silently strips keys it doesn't know, so the
-  schema check also asserted that `legacyFileUploadUX` and `memory` survived
-  parsing. (2026-10-15)
+  name and stayed off. (2026-10-15)
+- **A schema check only proves what it asserts, and #21's broke chat** — the
+  `memory:` section went in *between* `endpoints.agents` and
+  `endpoints.custom`. YAML then read the Foundry endpoint as `memory.custom`.
+  Zod's memory schema silently dropped the unknown key, the file still
+  "validated", and v0.8.8 came up with no custom endpoints: every message
+  failed with "Models for Foundry could not be loaded". The check had
+  asserted that the *new* keys survived parsing, never that the existing
+  ones did. A config check now asserts the whole shape the app depends on,
+  starting with the endpoint that carries every chat. Rule of thumb: when
+  inserting a top-level block into YAML, read the lines *after* it, because
+  indentation decides who owns them. (2026-10-15)
 
 ## Shaky
 

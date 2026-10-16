@@ -44,15 +44,6 @@ endpoints:
       - tools
       - chain
 
-# Inline memory only: the chat model itself calls memory tools to save and
-# recall what it should remember about you, and Settings > Personalization can
-# switch it off. The section must exist for the `memory` capability to work
-# (an absent section reads as disabled). No `agent:` block on purpose: that
-# is v0.8.8's opt-in automatic extraction, a second model pass after every
-# message, and it would need a Foundry deployment name committed here.
-memory:
-  personalize: true
-
   # Microsoft Foundry, reached through its v1 API — the OpenAI-compatible
   # surface (https://<resource>.openai.azure.com/openai/v1), not the classic
   # per-deployment one. That is why this is a `custom` endpoint rather than
@@ -82,6 +73,15 @@ memory:
       titleConvo: true
       titleModel: "current_model"
       modelDisplayLabel: "Foundry"
+
+# Inline memory only: the chat model itself calls memory tools to save and
+# recall what it should remember about you, and Settings > Personalization can
+# switch it off. The section must exist for the `memory` capability to work
+# (an absent section reads as disabled). No `agent:` block on purpose: that
+# is v0.8.8's opt-in automatic extraction, a second model pass after every
+# message, and it would need a Foundry deployment name committed here.
+memory:
+  personalize: true
 
 fileConfig:
   endpoints:
