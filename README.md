@@ -102,7 +102,7 @@ deploy — CI's or Komodo's — can take down the route used to repair it.
 | [monitoring/](monitoring/) | Prometheus, Grafana, Loki, Tempo, OTel Collector, Promtail, cAdvisor, node-exporter | Metrics, logs, and traces for the host and every container. Deployed by Komodo from this repo on a GitHub webhook, not by CI; each service's config is bind-mounted from the checkout rather than baked into an image |
 | [tunnel/](tunnel/) | cloudflared | The Cloudflare Tunnel every published service is reached through. Host-managed, never deployed — a bad deploy of the stack holding the tunnel would remove the path used to repair it |
 | [komodo/](komodo/) | Komodo Core + Periphery + MongoDB | The control plane: clones this repo on the server and deploys every stack above from it. Host-managed, never CI-deployed |
-| [librechat/](librechat/) | LibreChat, MongoDB, Meilisearch, RAG parser + pgvector | Chat front-end over a Microsoft Foundry deployment. A Komodo-owned stack with checkout-mounted config; secret delivery remains under evaluation |
+| [librechat/](librechat/) | LibreChat, MongoDB, Meilisearch | Chat front-end over a Microsoft Foundry deployment. A Komodo-owned stack with checkout-mounted config; secret delivery remains under evaluation |
 | [code-interpreter/](code-interpreter/) | LibreChat Code Interpreter v1.10.3 (API, worker, KVM sandbox runner, egress gateway, file and tool-call servers), Redis, Floci S3 | The sandbox behind LibreChat's "Run code" and "Upload to Code Environment": each execution runs in its own libkrun microVM with no network. Only LibreChat can reach it, over `librechat-codeapi`. Deployed by Komodo from this repo on a GitHub webhook |
 
 Two more stacks run on the server but are deliberately **not** defined here.

@@ -492,13 +492,28 @@ start of a session; update when a concept lands or a new gap appears.
   anything. Its credentials are still not an access control — `test`/`test`
   and unsigned requests pass even with signature validation on — so the
   network is the boundary, as it was in August. (2026-10-15)
+- **Self-hosting the code sandbox settled document authoring, and made the
+  document parser pointless** — August's design ruled out LibreChat's Code
+  Interpreter because it was a paid service that sent files off the homelab.
+  Both objections disappeared once it went open source, and it was the only
+  route with a built-in way to hand a file back. Acceptance was a real
+  document: uploaded, edited by the model, downloaded edited from the chat.
+  The sandbox reads Word/Excel/PDF with real libraries, so "Upload as Text"
+  (`rag_api` + `vectordb`, plus a Foundry embeddings deployment that
+  full-context mode never queried) only duplicated it, worse. Removed. One
+  thing worth knowing about LibreChat's config: listing
+  `endpoints.agents.capabilities` *replaces* the default list rather than
+  editing it. So turning one capability off means writing out every one you
+  keep. The schema in the running container validated the result.
+  (2026-10-15)
 
 ## Shaky
 
 - Komodo's Resource Sync (stacks declared as TOML in the repo) — deliberately
   untouched so far; it is the obvious next capability after this migration.
-- LibreChat's production acceptance run — the stack has not yet been deployed
-  and its volume backup/restore and public-hostname tests remain open.
+- LibreChat's production acceptance — deployed and in use, and the Code
+  Environment passed a real edit-and-download run (2026-10-15). Volume
+  backup/restore and the public-hostname test are still open.
 - LibreChat secret delivery — the host `.env` avoids Git and Komodo's
   Environment page, but Compose expands it into Komodo's normalized config log;
   a secret-aware runtime path is still needed before public deployment.
@@ -549,6 +564,9 @@ start of a session; update when a concept lands or a new gap appears.
   uploaded and generated files should live, then verify whatever enforces it.
 - Move `code-interpreter/` off v1.10.3 once upstream ships a release that
   closes #320/#329, re-running a real `/exec` before calling it done.
+- Delete the `text-embedding-3-small` deployment from the Foundry resource:
+  nothing uses it since `rag_api` was removed (2026-10-15). It only bills per
+  token, so this is tidiness, done in the Azure portal.
 
 ## Open questions
 
