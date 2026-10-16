@@ -59,7 +59,7 @@ endpoints:
       # URL — hostname included — is deliberately kept out of this repo:
       # nothing here identifies the Azure resource.
       baseURL: "${AZURE_BASE_URL}"
-      apiKey: "${AZURE_API_KEY}"
+      apiKey: "${FOUNDRY_API_KEY}"
       models:
         # `default` is required by the schema (min 1 entry), but `fetch` makes
         # LibreChat call GET <baseURL>/models on startup and replace this list
@@ -86,22 +86,35 @@ endpoints:
 # Enforcing it would mean listing every agent here, which defeats the point.
 modelSpecs:
   addedEndpoints: [agents]
-  # Deliberately empty: no agent IDs live in this repo. A spec here would be
-  # the only way to force a default agent for new chats, but it pins an ID
-  # that breaks silently if the agent is ever recreated. New chats open on
-  # whatever each person used last instead.
-  list: []
+  # Don't auto-select a spec: the only one below is a hidden placeholder, so
+  # new chats open on whatever each person used last.
+  prioritize: false
+  # A placeholder, not an agent. v0.8.8 discards the whole `modelSpecs`
+  # section when `list` is empty (processModelSpecs returns early), and
+  # `addedEndpoints` goes with it, which is why #23's menu still offered
+  # Foundry. One spec keeps the section alive; `showInMenu: false` makes
+  # /api/config strip it (excludeHiddenModelSpecs) while keeping
+  # `addedEndpoints`. It names no agent, so no agent IDs live in this repo.
+  list:
+    - name: agents-only
+      label: Agents
+      showInMenu: false
+      preset:
+        endpoint: agents
 
 interface:
+  # `addedEndpoints` only takes effect with the model menu on; set it
+  # explicitly rather than relying on v0.8.8 inferring it.
+  modelSelect: true
   # Nothing to tune from the chat box; tuning belongs to the agent.
   presets: false
   parameters: false
-  # Seeds the USER role's agent permissions at startup (v0.8.8 applies these to
-  # USER only; ADMIN keeps create and share). Without this, anyone could build
-  # an agent on any model and walk around the menu above.
-  agents:
-    use: true
-    create: false
+  # No `agents:` block on purpose. v0.8.8 writes explicit `interface.agents`
+  # values into *both* the USER and ADMIN roles on every startup
+  # (updateInterfacePermissions), so `create: false` here also took Agent
+  # Builder away from the admin (#23). Agent permissions per role live in the
+  # roles collection instead, set once; without explicit config, startup
+  # preserves them: USER create=false, ADMIN create=true.
 
 # Inline memory only: the chat model itself calls memory tools to save and
 # recall what it should remember about you, and Settings > Personalization can

@@ -72,7 +72,12 @@ services:
       # is a variable rather than a literal on purpose: it identifies the Azure
       # resource, and this repo is public.
       AZURE_BASE_URL: ${AZURE_BASE_URL}
-      AZURE_API_KEY: ${AZURE_API_KEY}
+      # Exposed under another name on purpose: LibreChat enables its built-in
+      # "Azure OpenAI" endpoint whenever a variable called AZURE_API_KEY
+      # exists, which put a second, unconfigured provider in the model menu.
+      # librechat.yaml reads the key as ${FOUNDRY_API_KEY}; the host .env keeps
+      # the AZURE_API_KEY name.
+      FOUNDRY_API_KEY: ${AZURE_API_KEY}
       # The code sandbox (code-interpreter/), behind "Run code" and "Upload to
       # Code Environment". Unset, LibreChat falls back to the paid hosted API
       # with no key, and every upload fails with a 401. LibreChat signs a
