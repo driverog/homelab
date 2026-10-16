@@ -42,7 +42,9 @@ services:
   # The only container LibreChat talks to. It verifies LibreChat's token,
   # queues the job in Redis and proxies file transfers.
   api:
-    image: ghcr.io/librechat-ai/code-interpreter-api:sha-68c9f931b67fea8d8d96eb64b869dc6d70d04466
+    # The allow marker: gitleaks' generic-api-key rule reads this commit hash
+    # as a key. It is a public git SHA.
+    image: ghcr.io/librechat-ai/code-interpreter-api:sha-68c9f931b67fea8d8d96eb64b869dc6d70d04466 # gitleaks:allow
     container_name: codeapi
     restart: unless-stopped
     environment:
