@@ -53,6 +53,14 @@ http://groupsplit.sussman.win {
     }
 }
 
+# tv is a Stack defined in Komodo's UI, not in this repo (see the README): its
+# one container joins `internal` as `tv-addon` and listens on 7000. It builds
+# its own links from a configured https origin, so it needs no forced
+# X-Forwarded-Proto the way groupsplit does.
+http://tv.sussman.win {
+    reverse_proxy tv-addon:7000
+}
+
 # Metrics only, on a port of its own. Caddy's admin API on localhost:2019 also
 # serves /metrics, but the same API can rewrite the running config, so it stays
 # on localhost where no other container can reach it. This site exposes the

@@ -38,6 +38,7 @@ flowchart LR
         KOMODO[Komodo]
         LIBRECHAT[LibreChat]
         GROUPSPLIT[GroupSplit]
+        TV[tv]
     end
 
     CADDY --> IMMICH
@@ -46,6 +47,7 @@ flowchart LR
     CADDY --> KOMODO
     CADDY --> LIBRECHAT
     CADDY --> GROUPSPLIT
+    CADDY --> TV
 
     subgraph voice[Local voice & AI]
         WHISPER[Whisper STT]
@@ -105,7 +107,7 @@ deploy — CI's or Komodo's — can take down the route used to repair it.
 | [librechat/](librechat/) | LibreChat, MongoDB, Meilisearch | Chat front-end over a Microsoft Foundry deployment. A Komodo-owned stack with checkout-mounted config; secret delivery remains under evaluation |
 | [code-interpreter/](code-interpreter/) | LibreChat Code Interpreter v1.10.3 (API, worker, KVM sandbox runner, egress gateway, file and tool-call servers), Redis, Floci S3 | The sandbox behind LibreChat's "Run code" and "Upload to Code Environment": each execution runs in its own libkrun microVM with no network. Only LibreChat can reach it, over `librechat-codeapi`. Deployed by Komodo from this repo on a GitHub webhook |
 
-Two more stacks run on the server but are deliberately **not** defined here.
+Three more stacks run on the server but are deliberately **not** defined here.
 The first,
 [traktv-tg-bot](https://github.com/lorainemg/traktv-tg-bot) (my Telegram bot
 for Trakt.tv + Postgres 17 + Aspire dashboard), generates its compose file
@@ -132,6 +134,17 @@ the bot's is, and unlike the bot it *is* published: its `web` container joins
 seam — the compose file, the image tags and the other three containers belong
 to that repo. Its Keycloak is not published, so browser-facing login is not
 reachable from outside the LAN yet (see [LEARNING.md](LEARNING.md)).
+
+The third is **tv**, a single container (`tv-addon`) in a Stack whose compose
+file is written in Komodo's UI and kept nowhere else: no repo holds it and no
+CI writes it, so the only copies are Komodo's database and its nightly backups
+(`/etc/komodo/backups` on the host). It stays out of `komodo/stacks.toml` for
+the same reason as the other two. Komodo pulls its private image with the same
+`lorainemg` GHCR account as `config-agent`, and it is the one Stack with Auto
+Update on: the nightly Global Auto Update procedure (03:00) redeploys it when
+its image tag moves. Like group-split it joins `internal`, and
+[config/caddy/Caddyfile](config/caddy/Caddyfile) publishes `tv.<domain>` to
+`tv-addon:7000`. Its state lives in the `tv_data` volume.
 
 Highlights:
 
