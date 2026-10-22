@@ -106,6 +106,7 @@ deploy — CI's or Komodo's — can take down the route used to repair it.
 | [komodo/](komodo/) | Komodo Core + Periphery + MongoDB | The control plane: clones this repo on the server and deploys every stack above from it. Host-managed, never CI-deployed |
 | [librechat/](librechat/) | LibreChat, MongoDB, Meilisearch | Chat front-end over a Microsoft Foundry deployment. A Komodo-owned stack with checkout-mounted config; secret delivery remains under evaluation |
 | [code-interpreter/](code-interpreter/) | LibreChat Code Interpreter v1.10.3 (API, worker, KVM sandbox runner, egress gateway, file and tool-call servers), Redis, Floci S3 | The sandbox behind LibreChat's "Run code" and "Upload to Code Environment": each execution runs in its own libkrun microVM with no network. Only LibreChat can reach it, over `librechat-codeapi`. Deployed by Komodo from this repo on a GitHub webhook |
+| [ci-runner/](ci-runner/) | GitHub Actions runner 2.338 (official image + Compose), Docker-in-Docker 29.9 | A self-hosted runner for a private repo, so its Actions jobs run here instead of on GitHub's machines. Jobs get a private Docker daemon, never the server's. Deployed by Komodo from this repo, which also builds the runner image on the server — see [The self-hosted runner](#the-self-hosted-runner-ci-runner) |
 
 Three more stacks run on the server but are deliberately **not** defined here.
 The first,
@@ -185,6 +186,7 @@ Highlights:
 ├── komodo/           docker-compose.yml (Core + Periphery + Mongo), registries.config.toml, .env.example
 ├── librechat/        docker-compose.yml, config/librechat.yaml, .env.example (deployed by Komodo)
 ├── code-interpreter/ docker-compose.yml, .env.example (LibreChat's code sandbox, deployed by Komodo)
+├── ci-runner/        docker-compose.yml, runner/ (Dockerfile, entrypoint, job hook), .env.example (Actions runner, built and deployed by Komodo)
 └── scripts/          bootstrap.sh, codeapi-secrets.sh, pre-commit (gitleaks)
 ```
 
@@ -249,7 +251,10 @@ Conventions:
    `KOMODO_WEBHOOK_SECRET`, from `komodo/.env` — CI does not hold it, only
    GitHub's per-stack webhooks use it). The sync needs no webhook: the
    `sync-komodo` job in `deploy.yml` re-renders and re-runs it on every push
-   that touches `stacks.toml` or `deploy.yml`.
+   that touches `stacks.toml` or `deploy.yml`. `ci-runner`'s `.env` holds a
+   registration token that expires an hour after GitHub issues it, so fetch
+   it right before deploying that Stack; the runner registers itself on
+   first start and the token can then be deleted.
 6. Mosquitto users are the one manual step:
    `docker exec mosquitto mosquitto_passwd -c /mosquitto/config/passwd homeassistant`
 7. LibreChat accounts are the other one. Registration is disabled on a
@@ -366,3 +371,35 @@ scripts, scenes, helpers) back to this repo once an hour with `[skip ci]`,
 so nothing is lost between deploys. Runtime state (`.storage/`, databases,
 `custom_components/`, Mosquitto's `passwd`) is never touched — back that
 layer up with HA's built-in automatic backups.
+
+### The self-hosted runner (`ci-runner`)
+
+Everything above runs on GitHub's machines, and stays there. `ci-runner` is for
+a different, private repo whose jobs run on this server instead. The runner
+dials out to GitHub and waits for work, so nothing is published and the tunnel
+is not involved. This repo's own CI never uses it, for two reasons: this repo
+is public, and a runner that a public repo can use runs code from strangers'
+pull requests; and the runner is a Stack the sync defines, so CI that depended
+on it could not repair it.
+
+- **Jobs get their own Docker.** `dind` is a private, privileged dockerd. The
+  runner reaches it through a socket in a shared volume and shares its network
+  namespace, so a job that publishes a port on `127.0.0.1` can fetch it. Jobs
+  cannot see the server's containers, but privileged means a fence, not a
+  wall: whoever can push workflows to the served repo should be trusted like
+  root here. dind's bridge and job networks live in `10.200.0.0/24` and
+  `10.201.0.0/16`, because its defaults collide with the LAN and break DNS.
+- **Registered once.** On first start the runner trades the one-hour token in
+  `.env` for its own credentials, kept with its install in the `runner-home`
+  volume. The only credential left on the server can do nothing but take that
+  repo's jobs. Lose the volume, or leave the runner offline for 14 days (GitHub
+  then deletes it), and it needs a fresh token in `.env`; `--replace` takes
+  over the old entry.
+- **Every job starts clean.** One long-lived runner means a job inherits the
+  last one's leftovers, so a job-started hook empties dind first: no
+  containers, volumes, networks or images. Only build cache survives, capped at
+  10 GB. An unchanged image rebuilt in about 5 s in testing.
+- **Capped.** dind gets 4 CPUs and 4 GB (every job container runs inside it),
+  the runner 2 CPUs and 2 GB.
+- **No fallback.** While the server is down, a job aimed at this runner waits,
+  for up to 24 hours, then fails. It does not fall back to GitHub's runners.
