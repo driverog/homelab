@@ -135,3 +135,20 @@ post_deploy.command = """
 docker restart prometheus promtail tempo otel_collector
 """
 post_deploy.shell_mode = false
+
+##
+
+[[stack]]
+name = "ci-runner"
+[stack.config]
+server = "Local"
+project_name = "ci-runner"
+repo = "lorainemg/homelab"
+file_paths = ["ci-runner/docker-compose.yml"]
+# No links: nothing is published. The runner only dials out to GitHub.
+# The runner image is built here on the server from ci-runner/runner/, and an
+# edit there changes no compose file, so it needs both the build and a forced
+# deploy to land. When nothing changed, the build is a cache hit and `up -d`
+# leaves the containers alone, so a job in progress survives unrelated pushes.
+run_build = true
+webhook_force_deploy = true

@@ -552,6 +552,45 @@ start of a session; update when a concept lands or a new gap appears.
   parses to. Still UI-only: a hand-written API call can name Foundry
   directly. (2026-10-16)
 
+- **A self-hosted runner dials out; nothing dials in** — it long-polls GitHub
+  for jobs, so it needs no port, no hostname and no tunnel route. That is also
+  why it belongs only on a private repo: whoever can trigger a workflow runs
+  code on the machine, and on a public repo that includes a fork's pull
+  request. (2026-10-22)
+- **The Docker socket is root** — a job handed `/var/run/docker.sock` can
+  `docker run -v /:/host` and read every stack's `.env`. Docker-in-Docker gives
+  jobs a daemon of their own instead, but it has to run privileged, so it stops
+  accidents and careless scripts, not a determined attacker: a fence, not a
+  wall. (2026-10-22)
+- **`127.0.0.1` belongs to a network namespace, not a machine** — under
+  Docker-in-Docker a published port opens inside the dind container, so a test
+  that publishes on `127.0.0.1` and fetches it from the runner reaches nothing.
+  `network_mode: service:dind` puts both in one namespace; verified with a
+  real container smoke test that does exactly that. (2026-10-22)
+- **A nested Docker cannot see the outer one's address plan** — dind only knows
+  its own routes, so its defaults (bridge `172.17.0.0/16`, networks from
+  `172.18.0.0/16` up) landed on the laptop's resolver address `172.17.0.1`:
+  every lookup inside SERVFAILed while a plain container on the same network
+  resolved fine. On the server the LAN and its DNS are `172.20.0.0/16`, which
+  dind would hand to the third network a job creates. Fixed by pinning dind to
+  `10.200.0.0/24` and `10.201.0.0/16`, which nothing on either machine uses.
+  (2026-10-22)
+- **Register-once vs. ephemeral is a choice between two secrets** — an
+  ephemeral runner starts every job clean but re-registers itself after each
+  one, so the server needs a long-lived token with admin rights on the repo.
+  A runner registered once keeps only its own key, which can do nothing but
+  take that repo's jobs. Chose register-once; a job-started hook that empties
+  dind buys back most of the clean slate. The runner rewrites its own config
+  files while running (`RunnerConfigUpdater` in actions/runner, delete then
+  write), so the whole runner home is the volume rather than a copied list of
+  files that would miss the next rewrite. (2026-10-22)
+- **Komodo can build an image on the server** — `run_build = true` runs
+  `docker compose build` before pull and `up`. With `webhook_force_deploy`, an
+  unchanged build is a cache hit and `up -d` keeps the same container
+  (verified locally: same container ID, same image ID), so an unrelated push
+  never kills a running job. An image that never leaves the server needs no
+  registry and no CI. (2026-10-22)
+
 ## Shaky
 
 - Komodo's Resource Sync (stacks declared as TOML in the repo) — deliberately
@@ -575,6 +614,9 @@ start of a session; update when a concept lands or a new gap appears.
 
 ## Next
 
+- `ci-runner`: once the runner shows as Idle, delete `RUNNER_TOKEN` from its
+  host `.env`. Then watch the `ci-runner_dind-data` volume for a few weeks —
+  the 10 GB build-cache cap is a guess, not a measurement.
 - Delete `portainer_data` on or after **2026-09-25** — it is the only surviving
   copy of Portainer's stack definitions, kept one month as the migration's last
   undo. `ssh home 'docker volume rm portainer_data'`.

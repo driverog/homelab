@@ -67,6 +67,14 @@ The ordering is the whole point: Komodo must never pull an image GHCR does not
 have yet. A split across two jobs deploys the previous `:latest` and reports
 success.
 
+**Variant: Komodo builds it on the server.** If the image is only ever run here,
+skip GHCR and CI: give the service `build: <image>` and no `image:`, and declare
+`run_build = true` and `webhook_force_deploy = true` on the Stack. Komodo runs
+`docker compose build` before every deploy, so there is no race to close. The
+forced deploy is what makes a Dockerfile-only edit land, and an unchanged build
+is a cache hit, so `up -d` leaves the running container alone. Example:
+`ci-runner`.
+
 **Filters are `some` by default.** A negated pattern (`'!path/**'`) matches every
 path it does not name, so the filter fires on every commit in the repo. Use a
 positive glob instead.
