@@ -9,10 +9,11 @@
 #
 # Schema reference: https://www.librechat.ai/docs/configuration/librechat_yaml
 
-# Required. Matches the CONFIG_VERSION LibreChat v0.8.8 ships with; a newer
+# Required. Matches the CONFIG_VERSION LibreChat v0.8.9-rc1 ships with; a newer
 # app version may expect a newer value here. Read the config changelogs
 # between the two (librechat.ai/changelog/config_v1.3.x) before bumping it.
-version: 1.3.17
+# 1.3.18 marks nothing breaking for a single replica.
+version: 1.3.18
 cache: true
 
 endpoints:
@@ -42,6 +43,9 @@ endpoints:
       - memory
       - ask_user_question
       - tools
+      # Dropped from upstream's default in v0.8.9, which deprecates authoring
+      # agent chains. Still valid, so listing it keeps chains on; whether to
+      # follow upstream is undecided (2026-10-25).
       - chain
 
   # Microsoft Foundry, reached through its v1 API — the OpenAI-compatible
