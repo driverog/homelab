@@ -23,7 +23,10 @@ services:
     # The project moved to the LibreChat-AI organisation; v0.8.8 and later are
     # published only under this name, while ghcr.io/danny-avila/librechat
     # stops at v0.8.7.
-    image: ghcr.io/librechat-ai/librechat:v0.8.8
+    # A release candidate on purpose: it is the first image with Node.js
+    # 24.22.1 (the 2026-10-21 security release), and v0.8.8 runs 24.16.0.
+    # Move to the final v0.8.9 tag once it ships.
+    image: ghcr.io/librechat-ai/librechat:v0.8.9-rc1
     container_name: librechat
     restart: unless-stopped
     depends_on:

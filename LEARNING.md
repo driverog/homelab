@@ -590,7 +590,6 @@ start of a session; update when a concept lands or a new gap appears.
   (verified locally: same container ID, same image ID), so an unrelated push
   never kills a running job. An image that never leaves the server needs no
   registry and no CI. (2026-10-22)
-
 - **A version tag is not a version** — Docker re-publishes official image
   tags when it rebuilds them (Docker Hub shows `docker:29.9.2-dind` last
   pushed 2026-10-22, two days after 29.9.2 was released), and Komodo pulls on
@@ -598,6 +597,15 @@ start of a session; update when a concept lands or a new gap appears.
   container, and for `ci-runner` that kills a running job. A `@sha256:` digest
   is the only reference that cannot move; updating it becomes a commit, made
   when a restart is expected. (2026-10-22)
+- **A security fix can ship as a release candidate before any release does** —
+  Node.js's 2026-10-21 release fixed a Brotli decoder bug that LibreChat
+  reaches before login, because body-parser 2.x decompresses `br` request
+  bodies. LibreChat had no release with it, but `v0.8.9-rc1` was already on
+  GHCR without a git tag. The image config's `NODE_VERSION` env says which
+  Node an image runs, and the registry API returns it without pulling. The
+  config check now parses `librechat.yaml` with *both* images' schemas and
+  diffs the output: rc1 only added defaults and dropped nothing. That's the
+  whole-shape assertion the v0.8.8 lesson asked for. (2026-10-25)
 
 ## Shaky
 
