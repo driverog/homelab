@@ -1,0 +1,94 @@
+# Self-hosted GitHub Actions runner — deployed by Komodo from this repo on a
+# GitHub webhook, not by CI. Komodo also builds the runner image here on the
+# server (`run_build` in komodo/stacks.toml), so nothing goes through a
+# registry.
+#
+# Jobs get a Docker daemon of their own, never the server's. `dind` is a
+# private dockerd whose only API is a unix socket in a volume shared with
+# `runner`: a job can build, run and push images, but cannot see, stop or
+# mount anything belonging to another stack. `dind` has to be privileged to
+# run containers at all, so this is a fence against accidents and careless
+# scripts, not a security boundary — anyone who can push a workflow to the
+# repo this runner serves should be trusted like someone with root here.
+#
+# Which repo that is lives in the host .env, not in this public file.
+
+# Pinned here, not left to the directory or the Komodo resource name. The
+# project name prefixes every volume below, and runner-home holds the runner's
+# registration: change it and the runner comes up unregistered.
+name: ci-runner
+
+services:
+  dind:
+    # Same Docker version as the CLI in the runner image, pinned by digest.
+    # Docker re-publishes a version tag whenever it rebuilds the image (for a
+    # base-image security fix, say), and Komodo pulls on every deploy. With
+    # the tag alone, the next unrelated push after a re-publish would recreate
+    # dind — and the runner with it, since it shares dind's network — killing
+    # whatever job was running. To update, bump the tag and digest together:
+    #   docker buildx imagetools inspect docker:<version>-dind
+    image: docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
+    container_name: ci-runner-dind
+    restart: unless-stopped
+    privileged: true
+    # Naming dockerd explicitly skips the image's default arguments, which
+    # would also listen on tcp://0.0.0.0:2375 with no TLS. The socket's group
+    # is the runner image's docker group (gid 123).
+    #
+    # The address ranges are not optional. This daemon can only see its own
+    # routes, so left to its defaults it hands out 172.17/16, 172.18/16, ...
+    # — the same ranges as the server's LAN (172.20/16, where the upstream DNS
+    # server lives) and the outer Docker's resolver address. A bridge in here
+    # that lands on one of them captures that traffic, and DNS for the runner
+    # and every job fails with SERVFAIL. Nothing on the server uses 10/8.
+    command:
+      - dockerd
+      - --host=unix:///run/dind/docker.sock
+      - --group=123
+      - --bip=10.200.0.1/24
+      - --default-address-pool=base=10.201.0.0/16,size=24
+    volumes:
+      - dind-data:/var/lib/docker
+      - dind-socket:/run/dind
+      # Same path as in `runner`, so a job that bind-mounts its checkout
+      # (`docker run -v "$PWD":/src`) names a path this daemon can see.
+      - work:/home/runner/_work
+    # Everything a job runs in a container runs inside this one, so this caps
+    # all of it — a build cannot starve the rest of the server.
+    cpus: 4
+    mem_limit: 4g
+
+  runner:
+    build: runner
+    container_name: ci-runner
+    restart: unless-stopped
+    init: true
+    depends_on:
+      - dind
+    # Share dind's network namespace. A job that publishes a container port on
+    # 127.0.0.1 and then fetches it needs both ends to mean the same
+    # 127.0.0.1; on separate networks the port opens inside dind and the fetch
+    # reaches nothing.
+    network_mode: service:dind
+    environment:
+      DOCKER_HOST: unix:///run/dind/docker.sock
+      # Read only by the first start, which registers the runner.
+      RUNNER_REPO_URL: ${RUNNER_REPO_URL:-}
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-}
+      RUNNER_NAME: homelab
+      RUNNER_LABELS: homelab
+      ACTIONS_RUNNER_HOOK_JOB_STARTED: /usr/local/lib/ci-runner/job-started.sh
+    volumes:
+      # The runner install, its registration and its self-updates, kept the
+      # way a runner on an ordinary machine keeps them. See entrypoint.sh.
+      - runner-home:/home/runner
+      - dind-socket:/run/dind
+      - work:/home/runner/_work
+    cpus: 2
+    mem_limit: 2g
+
+volumes:
+  dind-data:
+  dind-socket:
+  runner-home:
+  work:

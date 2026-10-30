@@ -1,0 +1,61 @@
+# Grafana datasources, provisioned from this file rather than clicked into the
+# UI. Applied at every Grafana start.
+#
+# The uid of each datasource matches the one Grafana generated when these were
+# created by hand, so provisioning adopts the existing datasources instead of
+# creating duplicates. Dashboard JSON refers to datasources by uid, so these
+# values must not change.
+apiVersion: 1
+
+datasources:
+  - name: prometheus
+    uid: afieyjs5xea68a
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      # Tempo's generated metrics carry a trace id on some samples (an
+      # exemplar). This turns those into a link from a point on a graph to one
+      # of the requests behind it — the metrics-to-traces direction.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: ffif4qb78sy68c
+
+  - name: loki
+    uid: cfif148vn85c0d
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # Turns a trace_id on a log line into a link through to Tempo. Only logs
+      # that arrive over OTLP carry trace_id; container logs scraped by
+      # promtail have no such field and get no link.
+      derivedFields:
+        - name: TraceID
+          matcherType: label
+          matcherRegex: trace_id
+          url: '${__value.raw}'
+          urlDisplayLabel: View Trace
+          datasourceUid: ffif4qb78sy68c
+          targetBlank: true
+
+  - name: tempo
+    uid: ffif4qb78sy68c
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # The reverse link: from a span to that service's logs. customQuery means
+      # the query below is used verbatim, so the tags mapping Grafana would
+      # otherwise apply is ignored — that is why there isn't one here.
+      #
+      # This reaches both kinds of log for the service, not just OTLP: promtail
+      # sets service_name from the compose service name, so a span for "bot"
+      # finds the bot's OTLP logs and its container stdout, provided the
+      # compose service name matches the OTLP service.name. Verified against
+      # live Loki rather than assumed.
+      tracesToLogsV2:
+        datasourceUid: cfif148vn85c0d
+        customQuery: true
+        query: '{service_name="${__span.tags["service.name"]}"}'

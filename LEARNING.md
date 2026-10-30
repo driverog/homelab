@@ -191,9 +191,421 @@ start of a session; update when a concept lands or a new gap appears.
   safe (with `delete: false`). Caught before it wiped `trakt-tg-bot`'s
   CI-written `file_contents` and secrets, because the pending diff was read
   on the live server before `RunSync` — the diff-review gate did its job the
-  first time it existed. The bot stack's answer: its shell is seeded by
-  `bootstrap.sh`, its contents stay owned by the bot repo's CI, and no TOML
-  ever names it. (2026-08-25)
+  first time it existed. The bot stack's answer: its shell was seeded by
+  `bootstrap.sh` (until 2026-09-02 — see the next entry), its contents stay
+  owned by the bot repo's CI, and no TOML ever names it. (2026-08-25)
+- **Non-admin Komodo users can create Stacks — the README said they couldn't.**
+  Komodo's rule is one line, `user.admin || !core_config().disable_non_admin_create`
+  (`resource/stack.rs`, v2.3.1), and that flag is unset here. What creation
+  *does* need is Read **plus the specific `Attach` permission on the target
+  server** — Read alone fails with "Cannot attach Stack to this Server" — and
+  the creator is then granted Write on the new resource automatically.
+  Verified end to end as the `trakt-tg-bot-ci` service user with a throwaway
+  stack that was never deployed (volume count 72 before and after). The
+  recorded "narrow key cannot create stacks" verdict had never been tried —
+  the floci mistake again — and it had shaped both `bootstrap.sh` and the
+  README. The bot's CI now creates its own Stack if missing; bootstrap no
+  longer seeds it. One more wrinkle: `GetStack` on a missing name answers
+  HTTP 500 with "Did not find any Stack", not a 404, so the CI branches on
+  the body. (2026-09-02)
+- **Komodo's `[[VAR]]` interpolation never reaches `links`, and the sync does
+  none at all** — `lib/interpolate/src/lib.rs` (v2.3.1) lists the seven stack
+  fields that get variables swapped in at deploy time: `file_contents`,
+  `environment`, both deploy commands, `compose_cmd_wrapper` and the two
+  extra-args lists. `bin/core/src/sync/` has no interpolation call, so
+  `stacks.toml` is applied verbatim. The LAN IP in each stack's `links` stays
+  literal, and that is the right answer anyway: those links exist for when
+  Cloudflare is down, and a name resolved through Cloudflare's DNS would share
+  the failure it is meant to survive. (2026-09-03)
+- **Komodo's stack state ignores exit codes; it asks whether every container
+  shares one state word** — `get_stack_state_from_containers` (`helpers/query.rs`,
+  v2.3.1) is a chain of `all(...)` checks: all running → Running, all exited →
+  Stopped, any *mix* → Unhealthy. A one-shot service that exited 0 beside running
+  ones is a mix, so `group-split` read unhealthy while nothing was wrong. The
+  knob is `ignore_services`, whose doc comment names the init-container case;
+  set to `["migrations-internal"]` and the state flipped on the next poll.
+  It survives that repo's CI because `UpdateStack` is a *partial* merge
+  (`resource/mod.rs` diffs the payload against the stored config and writes
+  only changed fields), the opposite of the sync's reset-undeclared rule
+  above. (2026-09-03)
+
+- **A wildcard DNS record does not publish a hostname; the tunnel's ingress
+  list does** — `*.sussman.win` is already a proxied CNAME at the tunnel, so
+  every subdomain resolves. But a token-run `cloudflared` fetches an explicit
+  per-hostname ingress list that ends in `http_status:404`, so an unlisted
+  subdomain resolves, reaches Cloudflare, and gets a 404 that never touches the
+  server. Publishing `groupsplit.sussman.win` therefore took two changes on the
+  Cloudflare side (ingress rule, plus an explicit CNAME to match the five
+  hand-made ones) and one in this repo (the Caddyfile). The README said the
+  tunnel "routes `*.{domain}` to Caddy", which was half the story and would have
+  sent a future me hunting in Caddy for a 404 Caddy never issued. (2026-09-03)
+- **A file Komodo reads verbatim cannot hold a variable, so the render moved
+  to CI — and a standing credential came with it** — `links` is outside
+  Komodo's interpolation and the sync applies `stacks.toml` word for word, so
+  the server's LAN address sat in five links here and in the bot's workflow.
+  Now `stacks.toml` is a template, `komodo/vars.env` holds the value once, and
+  the `sync-komodo` job renders with `envsubst`, pushes the result into the
+  sync as contents (a sync with no `repo` and no `files_on_host` reads its
+  `file_contents`, `sync/remote.rs`) and runs it. Rejected on the way: a Komodo
+  Variable (a seventh copy nothing could reference) and committing a rendered
+  copy back (two `stacks.toml` in git). The cost, taken with eyes open: CI now
+  holds an API key that can rewrite every Stack, `post_deploy` commands
+  included, where before it held a webhook secret that could only redeploy.
+  Scoped to a `homelab-ci` service user with Write on the one sync. (2026-09-03)
+  *Superseded 2026-09-05: `vars.env` is gone and the render happens in the
+  `run-sync` action, from a `vars` input the workflow states — see the entry
+  below.*
+
+- **`$GITHUB_ACTION_PATH` is how one action reaches another file in its own
+  repo** — a composite action cannot `uses: ./../lib`, because a relative
+  `uses:` resolves against the *caller's* workspace, which for a cross-repo
+  call is a different repo entirely. What does work: GitHub checks out the
+  action's whole repository, not just the action's directory, so
+  `$GITHUB_ACTION_PATH/../client/cli.py` is on disk and runnable. That single
+  fact is what allows three actions (`deploy-stack`, `update-stack`,
+  `run-sync`) to sit over one shared Python client instead of three copies of
+  the same curl. (2026-09-05)
+
+- **Code travels with a shared action; configuration must not** — the first
+  design put `vars.env` (holding the server's LAN address) inside the action
+  directory, so every caller would get the value for free by the same
+  checkout-the-whole-repo rule above. It removes the duplication, and it is
+  still wrong: the bot repo would then vendor a fact about this house along
+  with the tool. Now each workflow passes `vars: HOMELAB_LAN_IP=…` and the
+  client reads it from `KOMODO_VARS`. The tell for this smell is asking what a
+  second, unrelated caller would inherit. One consequence worth remembering:
+  configuration that moves takes its change-detection with it — with the
+  address living in `deploy.yml`, the `paths-filter` has to watch `deploy.yml`,
+  or editing the IP would push and silently skip the sync. (2026-09-05)
+
+- **`${{ }}` in a `run:` block is a shell injection, not a variable** — GitHub
+  substitutes expressions into the *text* of the script before bash sees it, so
+  `--stack '${{ inputs.stack }}'` with an input containing a single quote closes
+  the quote and runs the rest as commands. Demonstrated on the first draft of
+  these actions: an input of `x'; echo INJECTED; '` executed. The fix is
+  mechanical — every input goes in the step's `env:` block and is referenced as
+  `"$VAR"`, which bash expands at runtime with no re-parsing. Worth internalising
+  because the vulnerable form reads as ordinary quoting and looks fine in review;
+  the tell is not the quotes, it is `${{` appearing anywhere below `run:`.
+  (2026-09-05)
+
+- **The bug you keep making is a property of the language, not of you** — the
+  first version of this client was bash, and its review found three defects:
+  a function returning non-zero aborted its caller under `set -e` (so the
+  missing-stack probe killed the step it existed to inform), a secret-leak
+  test that could never fail because it drove the success path where nothing
+  is printed, and `envsubst` needing an explicit name list or it eats any `$`
+  in a compose file. The call-poll-check logic was correct both times. Rewrote
+  it in Python: same design, standard library only, and that entire class of
+  mistake stops existing. Worth asking early, not after the review: is this
+  shell script doing string handling and error control that a language with
+  exceptions would do for free? (2026-09-05)
+
+- **Changing an HTTP client changes headers you never wrote** — the actions'
+  first live run failed in both jobs with `HTTP 403: response was not json`.
+  Nothing to do with Komodo, the API key or the new Execute grant: Cloudflare
+  sits in front of `komodo.sussman.win` and bans urllib's default
+  `User-Agent: Python-urllib/3.x`, answering a plain-text `error code: 1010`
+  before the request reaches the server. The hand-rolled `curl` it replaced
+  had never hit this, because curl sends its own agent. The lesson is not
+  "Cloudflare blocks Python" but that a rewrite silently inherits every
+  default of the new library, and the ones that bite are the defaults *nobody
+  in the diff is thinking about* — a User-Agent, a redirect policy, a TLS
+  verification setting. Verified by curling the live host with three agents:
+  `curl/8.5.0` → 401 from Komodo, `Python-urllib/3.12` → 403 from Cloudflare,
+  `homelab-komodo-client` → 401 from Komodo. The stub now replays that block,
+  so losing the header fails the suite instead of a deploy. (2026-09-06)
+
+- **An error message that discards the body discards the diagnosis** — the
+  same failure said `response was not json` and stopped there, so the actual
+  answer (`error code: 1010`) sat one string away for the length of a debugging
+  session. The handler was written to be careful about secrets, which is right
+  for Komodo's own JSON — a stack's `environment` is in those bodies. But a
+  *non-JSON* body cannot be Komodo answering, so the caution had leaked into
+  the one branch where it bought nothing. Worth asking of any `except` that
+  summarises: if this fires in CI at 2am, does the message contain enough to
+  act on, or only enough to know something went wrong? (2026-09-06)
+
+- **A shared action pinned at `@main` is a contract, and a branch can't
+  extend it** — the GHCR plan said "add two fields to the bot's `jq` payload",
+  but by the time it ran the bot deployed through this repo's `update-stack`
+  action, which had no such inputs. So a bot-repo change grew a prerequisite
+  here: two inputs threaded input → `env:` → CLI flag → `stack_config`,
+  test-first at each link, merged to `main` *before* the bot can name them —
+  a `with:` key the action doesn't declare fails the caller's run. The pair
+  check sits at the innermost link on purpose: Komodo looks the stored account
+  up by provider *and* username, so one without the other would skip the login
+  silently and surface minutes later as `docker pull: denied`. Refusing at the
+  boundary makes it a one-line CI failure naming the missing input. (2026-09-05)
+
+- **A strict type checker reads the tests you didn't** — annotating the Komodo
+  client (`mypy --strict`, pinned in `test-actions.yml`) turned up three things
+  38 green tests had not: a `request_timeout: int` that a test passes `0.2`
+  to; a `TestPayloads.setUp` assigning a `Path` to `self.env`, shadowing the
+  inherited `env()` helper (harmless until the first test in that class calls
+  it); and an `assertIsNone` on a function that can only return `None`. Two
+  design points to keep: `StackConfig` is a `TypedDict`, not a dataclass,
+  because "a key the caller didn't set is absent" is what keeps `UpdateStack`
+  partial, and a dict carries that straight into the JSON; and attributes
+  bolted onto library objects (`server.polls = {}`) are invisible to a
+  checker, so declare them on a subclass. (2026-09-05)
+
+- **Komodo's config file is a template, so a credential can be declared in git
+  and stored in `.env`** — the GHCR pull token was headed for the Komodo UI
+  (Settings → Providers), which stores it in Mongo where nothing in the repo
+  records that it exists: the `ignore_services` gap again. Reading the loader
+  crate (`mogh_config` 1.1.0) instead: it serialises the parsed TOML to JSON and
+  replaces every `${VAR}` from the process environment before the final parse,
+  so `komodo/registries.config.toml` holds `token = "${GHCR_PULL_TOKEN}"` and
+  the value lives in the host `komodo/.env` Core already reads. The spec had
+  rejected this route with "the value is a secret that could not live in git
+  either way" — half wrong. Two costs, both met the same evening: Core reads
+  config once at startup, and the first flipped deploy failed with `did not
+  find token in config` because Core had not been recreated (`StartedAt` still
+  read 2026-08-07); and an unset variable expands to `""` with no error. The
+  startup log's sanitizer prints a non-empty token as `####` and an empty one
+  as `""`, so that line is the check — the Providers page and
+  `ListImageRegistryAccounts` read Mongo only and never show a file-based
+  account. (2026-09-06)
+
+- **A package pushed with `GITHUB_TOKEN` inherits the repo's visibility,
+  whatever the "private by default" page says** — the spec quoted GitHub's
+  packages docs ("When you first publish a package … the default visibility is
+  private") and the plan's post-push check expected "already Private". The first
+  push of `ghcr.io/lorainemg/traktv-tg-bot/bot` came out Public: an anonymous
+  token from `ghcr.io/token` listed its tags with a 200. The Actions docs say
+  why, one page over: a workflow-created package "inherits the visibility and
+  permissions model of the repository where the workflow is run", and the bot
+  repo is public. No push flag and no API call changes visibility — it is one
+  click in the package's settings, after which it sticks. An org has two
+  switches under Settings → Packages (Package Creation: Private only; Default
+  Package Settings: no inheritance) that make new packages private from birth;
+  a personal account has neither, so the alternative is pushing with a stored
+  PAT, which is a secret to rotate. The docs-vs-reality lesson with a twist:
+  both pages were right about different cases, and the plan quoted the wrong
+  one. (2026-09-06)
+
+- **Caddy answers an empty 200 for a Host it has no site block for** — so "did
+  removing the route work?" cannot be answered by a status code. After the
+  `registry.sussman.win` block left the Caddyfile, the plan's check
+  (`-w '%{http_code}'`, expecting not-200) still read 200 and looked like a
+  failed decommission; what had actually changed was the body, from
+  `["alpine","app","traktv-tg-bot/bot"]` to `content-length: 0`. A 404 comes
+  only from the tunnel's ingress list for a hostname it has no rule for, which
+  is a different layer and a later step. The general shape, and this repo keeps
+  meeting it: assert on the signal that separates the two outcomes you care
+  about, not the one that is easiest to write. (2026-09-06)
+
+- **A success path that logs nothing is indistinguishable from a path that
+  never ran** — Komodo's registry login pushes a log line only inside its
+  `if let Err(...)`, so a working `docker login` leaves no trace in the update
+  at all. The bot's first failed deploy showed `--- Login to Registry ERROR`,
+  which made "look for the Login to Registry section" seem like the way to
+  confirm the fix; on the successful deploy that section is simply absent. The
+  real evidence is second-order: a *private* image was pulled, which is
+  impossible without the login. Worth pairing with the `docker-registry`
+  webhook lesson above — both are cases where the observable thing is missing
+  in two different situations, and only a check that can fail tells them apart.
+  (2026-09-06)
+
+- **Verify a credential on your own schedule, not the next user's** — the
+  `config` stack got its `registry_provider` / `registry_account` from the sync
+  **8 seconds after** its last deploy, so the login sat unexercised while
+  `config-agent` was already private. The next thing to test it would have been
+  an ordinary Caddyfile edit — on the one stack holding Caddy, which every other
+  hostname and Komodo's own UI are reached through. Triggering the deploy
+  deliberately turned "find out during the next unrelated change, on the
+  recovery path" into a check that could only cost a failed pull with the
+  containers left running. The general rule this repo keeps arriving at from
+  different directions: put the risky first-run somewhere you are watching.
+  (2026-09-06)
+
+- **Every container has its own loopback** — a process bound to `127.0.0.1`
+  inside a container is reachable from that container's own network namespace
+  and nowhere else, so "the endpoint answers" and "Prometheus can scrape it"
+  are different questions. Caddy's admin API and the OTel collector's
+  self-telemetry both returned 200 to `docker run --network container:<name>`
+  and refused the connection by name from `internal`. Probe from the vantage
+  point that will do the scraping. (2026-09-07)
+- **`401` vs `404` tells you a feature exists but is switched off** —
+  LibreChat's `/metrics` answered 401 while unknown routes answered 404, which
+  is what surfaced `METRICS_SECRET`. The tell only works when the app 404s
+  unknown routes: its RAG API 401s *everything* from a blanket auth
+  middleware, so a route that does not exist looked merely locked.
+  (2026-09-07)
+- **A duplicate key in a `.env` is silent and the last one wins** — no warning
+  from compose, no error. Verified with a two-line `.env` and
+  `docker compose config`. A hand-edited secret landing twice in one file and
+  never in its twin looked exactly like it had worked. (2026-09-07)
+- **Komodo's deploy trigger is a per-stack GitHub webhook, and one can simply
+  be missing** — `librechat` had none, so every change to its compose file
+  since 2026-08-26 reached the repo and stopped there while the stack still
+  reported `running` on August's container. A green stack is not evidence it
+  runs current code; `docker inspect -f '{{.State.StartedAt}}'` is.
+  (2026-09-07)
+- **`promtool check config` stats every `credentials_file`** — an absent token
+  file fails the check, so Prometheus would refuse to start if its entrypoint
+  had not already written the tokens. The `entrypoint:` wrapper in
+  `monitoring/docker-compose.yml` is a hard ordering requirement, not a
+  convenience. (2026-09-07)
+
+- **cAdvisor is the floor, an exporter is the ceiling, and the gap is often
+  not worth the containers** — cAdvisor already reports every container's CPU,
+  memory, network and disk I/O with no per-service setup. A database exporter
+  would add connection counts, cache hit ratios, Redis evictions and
+  replication state, but each is another container *plus* that database's
+  credentials duplicated into `monitoring/.env` — the same two-copy problem
+  LibreChat's token has, once per database. Decided 2026-09-07 to skip all
+  four (`immich_postgres`, `immich_redis`, `librechat-mongo`,
+  `librechat-vectordb`); `komodo-core`, `ollama` and LibreChat's RAG API
+  expose nothing at all and are not fixable from this side anyway. Revisit if
+  an incident ever reads as "the container looks fine but the service is
+  slow" — that is precisely the gap an exporter fills. (2026-09-07)
+
+- **Two services can trust each other with a keypair instead of a shared
+  secret** — LibreChat signs a five-minute JWT per code request with an
+  Ed25519 *private* key; the Code Interpreter API holds only the *public* key
+  (as a JWK set) and can verify but never mint. Compare `METRICS_SECRET`,
+  which both ends hold whole, so a leak on either side is a full compromise.
+  The cost is that both halves must come from one generation run, which is
+  why `scripts/codeapi-secrets.sh` writes both host `.env` files at once.
+  (2026-10-15)
+- **"Healthy" said nothing about code execution, again** — the Code
+  Interpreter v1.10.4 runner passed every healthcheck and failed every single
+  execution inside its microVM (`anonymous-pipes.node` missing from the guest
+  image; upstream #320/#329). Only a real upload + `/exec` through
+  LibreChat's own code found it, and found two config gaps of ours before it:
+  hardened mode must be on in the API and worker too, not just the runner,
+  or the worker sends jobs without the signed grant the runner demands.
+  Pinned to v1.10.3, the same code minus the one breaking commit.
+  (2026-10-15)
+- **`internal: true` on a Docker network removes the route off the host** —
+  containers still resolve and reach each other by name, but nothing on that
+  network can open a connection to the internet. The code sandbox's private
+  network and the `librechat-codeapi` link both use it: nothing there needs
+  outbound traffic, because the *daemon* pulls images, not the containers.
+  Sandboxed Python trying `urlopen("http://example.com")` gets a DNS failure.
+  (2026-10-15)
+- **Floci came back as just an S3 server** — the August evaluation dropped it
+  as an ECS host. Here it replaces MinIO (whose community images are gone)
+  with no Docker socket, so none of its container-launching services can do
+  anything. Its credentials are still not an access control — `test`/`test`
+  and unsigned requests pass even with signature validation on — so the
+  network is the boundary, as it was in August. (2026-10-15)
+- **Self-hosting the code sandbox settled document authoring, and made the
+  document parser pointless** — August's design ruled out LibreChat's Code
+  Interpreter because it was a paid service that sent files off the homelab.
+  Both objections disappeared once it went open source, and it was the only
+  route with a built-in way to hand a file back. Acceptance was a real
+  document: uploaded, edited by the model, downloaded edited from the chat.
+  The sandbox reads Word/Excel/PDF with real libraries, so "Upload as Text"
+  (`rag_api` + `vectordb`, plus a Foundry embeddings deployment that
+  full-context mode never queried) only duplicated it, worse. Removed. One
+  thing worth knowing about LibreChat's config: listing
+  `endpoints.agents.capabilities` *replaces* the default list rather than
+  editing it. So turning one capability off means writing out every one you
+  keep. The schema in the running container validated the result.
+  (2026-10-15)
+- **An explicit capability list freezes the defaults: v0.8.8 proved it the
+  same day** — v0.8.8 added `memory` and `ask_user_question` to LibreChat's
+  defaults, and our hand-written list would have kept both off without a
+  word. Every upgrade now means comparing the list with
+  `defaultAgentCapabilities`. Three more things the v0.8.8 upgrade taught.
+  First, an image *name* can move: the project changed GitHub organisation,
+  and `ghcr.io/danny-avila/librechat` simply stops at v0.8.7. A tag bump alone
+  would have failed to pull. Second, read a migration's dry run before
+  planning downtime: the tenant-index migration "may be needed by
+  single-tenant deployments too", but against this database it planned 0
+  drops. Third, `memory` comes in two parts: inline tools need only a
+  `memory:` section, while the automatic extraction agent needs a deployment
+  name and stayed off. (2026-10-15)
+- **A schema check only proves what it asserts, and #21's broke chat** — the
+  `memory:` section went in *between* `endpoints.agents` and
+  `endpoints.custom`. YAML then read the Foundry endpoint as `memory.custom`.
+  Zod's memory schema silently dropped the unknown key, the file still
+  "validated", and v0.8.8 came up with no custom endpoints: every message
+  failed with "Models for Foundry could not be loaded". The check had
+  asserted that the *new* keys survived parsing, never that the existing
+  ones did. A config check now asserts the whole shape the app depends on,
+  starting with the endpoint that carries every chat. Rule of thumb: when
+  inserting a top-level block into YAML, read the lines *after* it, because
+  indentation decides who owns them. (2026-10-15)
+- **"Users may only use the agents I share" took three tries, and each
+  failure was something a schema check couldn't see** — `modelSpecs.enforce`
+  is the server-enforced version but needs every agent listed in the YAML,
+  so the menu is shaped instead: `addedEndpoints: [agents]` offers only the
+  Agents entry, which LibreChat fills per user from each agent's sharing
+  settings. #23 shipped that with an empty `list` and it did nothing: v0.8.8
+  *discards the whole `modelSpecs` section when the list is empty*
+  (`processModelSpecs` returns early), so `/api/config` sent
+  `modelSpecs: null` and the menu still offered Foundry. The fix is one
+  placeholder spec with `showInMenu: false`. It keeps the section alive,
+  `/api/config` strips it (`excludeHiddenModelSpecs`), and it names no
+  agent. #23 also set `interface.agents.create: false`, which v0.8.8 writes
+  into both USER and ADMIN on every startup (`updateInterfacePermissions`).
+  That took Agent Builder away from the admin, so agent permissions now live
+  in the roles collection only. And an "Azure OpenAI" entry nobody
+  configured turned out to be LibreChat's built-in Azure endpoint, which
+  enables itself whenever a variable named `AZURE_API_KEY` exists, so the
+  key reaches LibreChat as `FOUNDRY_API_KEY`. The lesson: for UI behaviour,
+  test what the browser receives (`/api/config`), not just what the YAML
+  parses to. Still UI-only: a hand-written API call can name Foundry
+  directly. (2026-10-16)
+
+- **A self-hosted runner dials out; nothing dials in** — it long-polls GitHub
+  for jobs, so it needs no port, no hostname and no tunnel route. That is also
+  why it belongs only on a private repo: whoever can trigger a workflow runs
+  code on the machine, and on a public repo that includes a fork's pull
+  request. (2026-10-22)
+- **The Docker socket is root** — a job handed `/var/run/docker.sock` can
+  `docker run -v /:/host` and read every stack's `.env`. Docker-in-Docker gives
+  jobs a daemon of their own instead, but it has to run privileged, so it stops
+  accidents and careless scripts, not a determined attacker: a fence, not a
+  wall. (2026-10-22)
+- **`127.0.0.1` belongs to a network namespace, not a machine** — under
+  Docker-in-Docker a published port opens inside the dind container, so a test
+  that publishes on `127.0.0.1` and fetches it from the runner reaches nothing.
+  `network_mode: service:dind` puts both in one namespace; verified with a
+  real container smoke test that does exactly that. (2026-10-22)
+- **A nested Docker cannot see the outer one's address plan** — dind only knows
+  its own routes, so its defaults (bridge `172.17.0.0/16`, networks from
+  `172.18.0.0/16` up) landed on the laptop's resolver address `172.17.0.1`:
+  every lookup inside SERVFAILed while a plain container on the same network
+  resolved fine. On the server the LAN and its DNS are `172.20.0.0/16`, which
+  dind would hand to the third network a job creates. Fixed by pinning dind to
+  `10.200.0.0/24` and `10.201.0.0/16`, which nothing on either machine uses.
+  (2026-10-22)
+- **Register-once vs. ephemeral is a choice between two secrets** — an
+  ephemeral runner starts every job clean but re-registers itself after each
+  one, so the server needs a long-lived token with admin rights on the repo.
+  A runner registered once keeps only its own key, which can do nothing but
+  take that repo's jobs. Chose register-once; a job-started hook that empties
+  dind buys back most of the clean slate. The runner rewrites its own config
+  files while running (`RunnerConfigUpdater` in actions/runner, delete then
+  write), so the whole runner home is the volume rather than a copied list of
+  files that would miss the next rewrite. (2026-10-22)
+- **Komodo can build an image on the server** — `run_build = true` runs
+  `docker compose build` before pull and `up`. With `webhook_force_deploy`, an
+  unchanged build is a cache hit and `up -d` keeps the same container
+  (verified locally: same container ID, same image ID), so an unrelated push
+  never kills a running job. An image that never leaves the server needs no
+  registry and no CI. (2026-10-22)
+- **A version tag is not a version** — Docker re-publishes official image
+  tags when it rebuilds them (Docker Hub shows `docker:29.9.2-dind` last
+  pushed 2026-10-22, two days after 29.9.2 was released), and Komodo pulls on
+  every deploy. So with a tag alone, an unrelated push can recreate a
+  container, and for `ci-runner` that kills a running job. A `@sha256:` digest
+  is the only reference that cannot move; updating it becomes a commit, made
+  when a restart is expected. (2026-10-22)
+- **A security fix can ship as a release candidate before any release does** —
+  Node.js's 2026-10-21 release fixed a Brotli decoder bug that LibreChat
+  reaches before login, because body-parser 2.x decompresses `br` request
+  bodies. LibreChat had no release with it, but `v0.8.9-rc1` was already on
+  GHCR without a git tag. The image config's `NODE_VERSION` env says which
+  Node an image runs, and the registry API returns it without pulling. The
+  config check now parses `librechat.yaml` with *both* images' schemas and
+  diffs the output: rc1 only added defaults and dropped nothing. That's the
+  whole-shape assertion the v0.8.8 lesson asked for. (2026-10-25)
 
 ## Shaky
 
@@ -214,8 +626,9 @@ start of a session; update when a concept lands or a new gap appears.
 
 - Komodo's Resource Sync (stacks declared as TOML in the repo) — deliberately
   untouched so far; it is the obvious next capability after this migration.
-- LibreChat's production acceptance run — the stack has not yet been deployed
-  and its volume backup/restore and public-hostname tests remain open.
+- LibreChat's production acceptance — deployed and in use, and the Code
+  Environment passed a real edit-and-download run (2026-10-15). Volume
+  backup/restore and the public-hostname test are still open.
 - LibreChat secret delivery — the host `.env` avoids Git and Komodo's
   Environment page, but Compose expands it into Komodo's normalized config log;
   a secret-aware runtime path is still needed before public deployment.
@@ -232,6 +645,9 @@ start of a session; update when a concept lands or a new gap appears.
 
 ## Next
 
+- `ci-runner`: once the runner shows as Idle, delete `RUNNER_TOKEN` from its
+  host `.env`. Then watch the `ci-runner_dind-data` volume for a few weeks —
+  the 10 GB build-cache cap is a guess, not a measurement.
 - Delete `portainer_data` on or after **2026-09-25** — it is the only surviving
   copy of Portainer's stack definitions, kept one month as the migration's last
   undo. `ssh home 'docker volume rm portainer_data'`.
@@ -248,11 +664,27 @@ start of a session; update when a concept lands or a new gap appears.
   drift because it *is* the record. The trade: Komodo's Mongo becomes less
   load-bearing for disaster recovery, but a wrong `project_name` in TOML empties
   volumes exactly like a wrong one in an API call.
-- Lock down `registry.sussman.win`, or stop using it. Verified 2026-08-25:
-  `GET /v2/` answers 200 with no auth challenge and `/v2/_catalog` returns
-  `["alpine","app","traktv-tg-bot/bot"]` to anyone on the internet. Image names
-  are public and the images are pullable. Decide between putting it behind
-  Cloudflare Access, adding registry auth, or moving those images to GHCR.
+- Delete `docker-registry_registry-data` on or after **2026-10-06** — the last
+  copy of the old registry's images, kept one month as the GHCR migration's
+  undo. `ssh home 'docker volume rm docker-registry_registry-data'`.
+- `group-split`'s `ignore_services` lives only in Komodo's Mongo. Decide
+  whether to move it into that repo's `deploy.yml` payload so a rebuild keeps it.
+
+- group-split's telemetry still terminates in its own Aspire dashboard
+  (`OTEL_EXPORTER_OTLP_ENDPOINT=http://compose-dashboard:18889`) instead of the
+  shared collector, so its traces never reach Tempo and die with the container.
+  It deploys from its own repo, so the change belongs there.
+- Delete the `docker-registry` deploy webhook on the GitHub repo — it points at
+  a Stack Komodo no longer has.
+- Code Interpreter retention: the sandbox's file server never deletes what it
+  stores in Floci (only its Redis keys expire), and Floci appears to store
+  S3 lifecycle rules without enforcing them — unverified. Decide how long
+  uploaded and generated files should live, then verify whatever enforces it.
+- Move `code-interpreter/` off v1.10.3 once upstream ships a release that
+  closes #320/#329, re-running a real `/exec` before calling it done.
+- Delete the `text-embedding-3-small` deployment from the Foundry resource:
+  nothing uses it since `rag_api` was removed (2026-10-15). It only bills per
+  token, so this is tidiness, done in the Azure portal.
 
 ## Open questions
 
@@ -260,3 +692,11 @@ start of a session; update when a concept lands or a new gap appears.
   merges repo config into directories holding runtime state simply necessary?
 - Is `cloudflared` on `:latest` a problem worth fixing, given the tunnel is the
   one thing that must never surprise you?
+- group-split's `Keycloak__Authority` is a LAN IP
+  (`http://172.20.3.194:8080/idp/realms/group-split`), and `keycloak` sits on
+  the stack's private network rather than `internal`. So `groupsplit.sussman.win`
+  serves the app but cannot complete a browser login from outside the house.
+  Fixing it is a change in the group-split repo, not this one — join `keycloak`
+  to `internal` and point the authority at a published hostname — but the
+  decision worth making first is whether that app should be internet-facing at
+  all, or sit behind Cloudflare Access like the registry question above.

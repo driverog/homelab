@@ -104,8 +104,8 @@ anyone will try when they get to document delivery.
 | Version | `ghcr.io/danny-avila/librechat:v0.8.7` | Upstream's compose runs `librechat-dev:latest`. This repo pins everything; `v0.8.7` is the newest published release tag |
 | Provider | Microsoft Foundry, as a `custom` endpoint on its **v1 API** | Already owned. The v1 surface is OpenAI-compatible, so the generic client fits it and there is no api-version to maintain; the built-in `azureOpenAI` endpoint builds the classic per-deployment URL instead |
 | Endpoint URL | Entirely in `${AZURE_BASE_URL}`, never a literal | The hostname identifies the Azure resource and this repo is public. `models.fetch` keeps the deployment names out too |
-| Document reading | `rag_api` + `vectordb`, `RAG_USE_FULL_CONTEXT=true` | The only way `.docx`/`.pdf` attachments parse at all. Full-context mode avoids retrieval queries, but the lite image still needs the Foundry embeddings deployment at startup |
-| Document authoring | Out of scope | No MCP server can return a file (see Concepts). Revisited below with the three real options |
+| Document reading | `rag_api` + `vectordb`, `RAG_USE_FULL_CONTEXT=true` | The only way `.docx`/`.pdf` attachments parse at all. Full-context mode avoids retrieval queries, but the lite image still needs the Foundry embeddings deployment at startup. **Superseded 2026-10-15:** documents are read in the code sandbox and both containers are gone; see the follow-up below |
+| Document authoring | Out of scope | No MCP server can return a file (see Concepts). Revisited below with the three real options. **Settled 2026-10-15** by the second option, self-hosted; see the follow-up below |
 | Search | Meilisearch, included | Conversation search is core to the product; excluding it means `SEARCH=false` and a visibly degraded UI |
 | Admin panel | Excluded | Upstream ships it in the same compose; it is a second published surface and a second session secret for a single-user install |
 | Authentication | LibreChat's own login, registration off from first boot | Parity with `komodo.sussman.win`. Accounts are made with the bundled CLI, so there is never an open-signup window to race |
@@ -313,6 +313,42 @@ out of Git and the public Environment page, but Compose interpolation still
 puts them in Komodo's normalized config log. A secret-aware delivery mechanism
 is therefore still required before this stack is production-ready.
 
+## Follow-up (2026-10-15): document authoring settled, document reading moved
+
+**Verdict: the second option below — LibreChat's Code Interpreter — won, and it
+no longer has either of the costs that ruled it out.** It became open source
+(LibreChat-AI/code-interpreter, Apache 2.0) after this design was written, so
+it now runs here as its own stack, `code-interpreter/`, and nothing leaves the
+homelab. Neither of the two costs recorded below still applies: there is no
+subscription, and files no longer leave the house.
+
+The reasoning, in order:
+
+1. **The delivery seam was the hard part, and only the code interpreter has
+   one.** As Concepts says, `createFile` is wired to the built-in code
+   interpreter alone. With the sandbox self-hosted, that seam is free: a file
+   the sandboxed code writes to `/mnt/data` comes back as an authenticated
+   LibreChat download.
+2. **Acceptance was a real document, not a health check.** Daniel uploaded a
+   document to the Code Environment, had the model edit it, and downloaded the
+   edited file from the chat. The tests run before the merge are in
+   lorainemg/homelab#19 and LEARNING.md.
+3. **Once the sandbox can read any file, the parser path is redundant.** The
+   sandbox reads `.docx`, `.xlsx` and `.pdf` with real libraries and can also
+   change them. "Upload as Text" (the `context` capability) could only flatten
+   them into prompt text, and it cost two containers plus a Foundry embeddings
+   deployment the full-context mode never queried. So `rag_api` and `vectordb`
+   were removed, and `librechat.yaml` now lists the agent capabilities
+   explicitly, without `context`, `ocr` and `file_search`. The vector store held
+   no embeddings when it was dropped.
+
+What remains of the other two options: Azure Assistants was never needed, so
+whether this Foundry resource exposes it was never checked. The MCP-plus-download-route
+design stays unbuilt.
+
+Still open: the sandbox keeps every uploaded and generated file indefinitely
+(see LEARNING.md, Next).
+
 ## Acceptance
 
 Status badges do not count for any of these.
@@ -340,7 +376,8 @@ step 4.
 
 ## Out of scope
 
-- **Document authoring.** "Have it write me a Word document and hand it back"
+- **Document authoring** — *settled 2026-10-15 by the self-hosted Code
+  Interpreter; see the follow-up above.* "Have it write me a Word document and hand it back"
   is a separate design, because the delivery seam is the hard part rather than
   the writing. Three real options, none free:
   - *Azure Assistants with `code_interpreter`.* The only option that reuses

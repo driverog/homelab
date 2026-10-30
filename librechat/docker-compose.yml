@@ -4,7 +4,7 @@
 # .github/workflows/deploy.yml: if it ever appears there, CI and Komodo would
 # both be driving the same compose project.
 #
-# Derived from https://github.com/danny-avila/LibreChat/blob/v0.8.7/docker-compose.yml
+# Derived from https://github.com/LibreChat-AI/LibreChat/blob/v0.8.8/docker-compose.yml
 # with every relative state bind mount removed. Komodo runs compose from its own
 # clone of this repo, and Docker silently creates a *directory* for a missing
 # bind source — upstream's `./.env`, `./data-node` and `./uploads` mounts would
@@ -20,12 +20,17 @@ name: librechat
 
 services:
   api:
-    image: ghcr.io/danny-avila/librechat:v0.8.7
+    # The project moved to the LibreChat-AI organisation; v0.8.8 and later are
+    # published only under this name, while ghcr.io/danny-avila/librechat
+    # stops at v0.8.7.
+    # A release candidate on purpose: it is the first image with Node.js
+    # 24.22.1 (the 2026-10-21 security release), and v0.8.8 runs 24.16.0.
+    # Move to the final v0.8.9 tag once it ships.
+    image: ghcr.io/librechat-ai/librechat:v0.8.9-rc1
     container_name: librechat
     restart: unless-stopped
     depends_on:
       - mongodb
-      - rag_api
     # No ports: published. Caddy reaches this over `internal`, so nothing on
     # the LAN can bypass the reverse proxy by hitting a host port.
     #
@@ -60,18 +65,38 @@ services:
       CREDS_IV: ${CREDS_IV}
       JWT_SECRET: ${JWT_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      # Unlocks /metrics, which LibreChat already serves but answers 401 on
+      # until this is set. Prometheus sends the same value as a bearer token,
+      # so the pair lives here and in monitoring/.env — rotating means both.
+      METRICS_SECRET: ${METRICS_SECRET}
       # Microsoft Foundry. librechat.yaml refers back to both of these by name
       # and every ${...} in that file is resolved against this environment, so
       # anything it references has to be passed here too. The full endpoint URL
       # is a variable rather than a literal on purpose: it identifies the Azure
       # resource, and this repo is public.
       AZURE_BASE_URL: ${AZURE_BASE_URL}
-      AZURE_API_KEY: ${AZURE_API_KEY}
-      # rag_api parses .docx/.pdf/.xlsx into text. FULL_CONTEXT makes it inject
-      # the whole document rather than query vector results, but the RAG image
-      # still initializes an embeddings client at startup.
-      RAG_API_URL: http://librechat-rag:8000
-      RAG_USE_FULL_CONTEXT: "true"
+      # Exposed under another name on purpose: LibreChat enables its built-in
+      # "Azure OpenAI" endpoint whenever a variable called AZURE_API_KEY
+      # exists, which put a second, unconfigured provider in the model menu.
+      # librechat.yaml reads the key as ${FOUNDRY_API_KEY}; the host .env keeps
+      # the AZURE_API_KEY name.
+      FOUNDRY_API_KEY: ${AZURE_API_KEY}
+      # The code sandbox (code-interpreter/), behind "Run code" and "Upload to
+      # Code Environment". Unset, LibreChat falls back to the paid hosted API
+      # with no key, and every upload fails with a 401. LibreChat signs a
+      # five-minute token per request with the private key below; the sandbox
+      # holds only the public half. Both halves come from
+      # scripts/codeapi-secrets.sh, and the issuer, audience and tenant must
+      # match code-interpreter/docker-compose.yml.
+      LIBRECHAT_CODE_BASEURL: http://codeapi:3112/v1
+      CODEAPI_AUTH_PROVIDER: librechat-jwt
+      CODEAPI_JWT_ALGORITHM: EdDSA
+      CODEAPI_JWT_KID: ${CODEAPI_JWT_KID}
+      CODEAPI_JWT_PRIVATE_JWK_JSON: ${CODEAPI_JWT_PRIVATE_JWK_JSON}
+      CODEAPI_JWT_ISSUER: librechat
+      CODEAPI_JWT_AUDIENCE: codeapi
+      CODEAPI_JWT_SINGLE_TENANT_ID: legacy
+      CODEAPI_JWT_TTL_SECONDS: 300
     volumes:
       # Relative to this file, resolved inside Komodo's clone. Mount the
       # directory, not the file: git replaces files during a pull, and a
@@ -86,6 +111,8 @@ services:
       # resolve this container by name. Nothing else joins `internal`.
       - librechat
       - internal
+      # Reaches exactly one container: the code sandbox's API.
+      - librechat-codeapi
 
   mongodb:
     image: mongo:8.0.20
@@ -104,6 +131,13 @@ services:
     container_name: librechat-meilisearch
     restart: unless-stopped
     environment:
+      # Prometheus metrics deliberately left off. Meilisearch has a /metrics
+      # endpoint behind MEILI_EXPERIMENTAL_ENABLE_METRICS, but reading it needs
+      # a key with the metrics.get action, and the only key here is the master
+      # key — which can also delete every index. Handing that to the monitoring
+      # stack costs more than the counters are worth, since cAdvisor already
+      # reports this container's CPU and memory. If search-specific metrics
+      # ever matter, mint a scoped key with POST /keys instead of reusing this.
       MEILI_HOST: http://librechat-meilisearch:7700
       MEILI_NO_ANALYTICS: "true"
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
@@ -112,54 +146,9 @@ services:
     networks:
       - librechat
 
-  # Document parser, not a retrieval system. LibreChat's native fallback is a
-  # plain readFileAsString, which hands the model the raw bytes of a .docx zip
-  # — and .docx/.pdf are accepted uploads either way, so without this container
-  # the failure is silent rather than an error.
-  rag_api:
-    # This image publishes only :latest, so it is pinned by digest instead.
-    image: ghcr.io/danny-avila/librechat-rag-api-dev-lite@sha256:f9f34c8ed6884b0ff9b17387e6174fed737dba29f21622ecb75604d82bc47bf8
-    container_name: librechat-rag
-    restart: unless-stopped
-    depends_on:
-      - vectordb
-    environment:
-      DB_HOST: librechat-vectordb
-      DB_PORT: 5432
-      POSTGRES_DB: librechat_vectors
-      POSTGRES_USER: librechat
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      RAG_PORT: 8000
-      JWT_SECRET: ${JWT_SECRET}
-      # The lite RAG image initializes OpenAI-compatible embeddings even in
-      # full-context mode. Reuse the Foundry v1 resource and its deployment.
-      RAG_OPENAI_API_KEY: ${AZURE_API_KEY}
-      RAG_OPENAI_BASEURL: ${AZURE_BASE_URL}
-      EMBEDDINGS_PROVIDER: openai
-      EMBEDDINGS_MODEL: text-embedding-3-small
-    networks:
-      - librechat
-
-  # A dependency of rag_api, not a feature: rag_api initialises a vector store
-  # at startup and will not boot without one, even though every request here
-  # only ever hits its /text parsing endpoint.
-  vectordb:
-    image: pgvector/pgvector:0.8.0-pg15-trixie
-    container_name: librechat-vectordb
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: librechat_vectors
-      POSTGRES_USER: librechat
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    networks:
-      - librechat
-
 volumes:
   mongo-data:
   meili-data:
-  pgdata:
   uploads:
   images:
   logs:
@@ -170,3 +159,5 @@ networks:
     name: librechat
   internal:
     external: true # shared with the other stacks; created by scripts/bootstrap.sh
+  librechat-codeapi:
+    external: true # LibreChat <-> code-interpreter only; created by scripts/bootstrap.sh

@@ -5,6 +5,13 @@
 # file that layer exists only in the database and cannot be grepped, reviewed
 # or rebuilt from the repo.
 #
+# This file is a template. `${HOMELAB_LAN_IP}` is filled in by the sync job in
+# .github/workflows/deploy.yml, which states the value in its `vars` input (and
+# by scripts/bootstrap.sh on a fresh server, which takes it from its
+# environment). The rendered TOML is pushed into the `homelab` sync, which
+# holds it as contents instead of cloning this repo — so Komodo never reads
+# this file directly, and a value that appears in many links is written once.
+#
 # Only non-default fields are declared. Komodo's sync diffs *declared* fields
 # against the live config and cannot see the rest, so anything omitted here is
 # left exactly as it is — not reset. That is deliberate:
@@ -18,10 +25,18 @@
 #     `delete: false`.
 #   - Which is why `trakt-tg-bot` is absent: its `file_contents` and
 #     `environment` (secrets included) are written by that repo's own CI,
-#     and any declaration here would wipe them on every sync. Its empty
-#     shell is created by scripts/bootstrap.sh instead.
+#     and any declaration here would wipe them on every sync. That CI also
+#     creates the Stack itself on its first run (see the README).
 #   - `branch = "main"`, `webhook_enabled = true`, `env_file_path = ".env"`
 #     and `auto_pull = true` are Komodo defaults and stay implicit.
+#   - `links` is what the Komodo UI shows as clickable URLs on the stack. Each
+#     lists the public hostname first (Cloudflare tunnel -> Caddy -> container;
+#     the hostname table lives in the tunnel's dashboard config, not here), then
+#     the LAN address for every port the compose file publishes on the host.
+#     No link means nothing is reachable from outside its own Docker network.
+#     `links` is not one of the fields Komodo interpolates (lib/interpolate,
+#     v2.3.1), which is why the address is rendered in before the push rather
+#     than referenced as a Komodo variable.
 
 [[server]]
 name = "Local"
@@ -40,17 +55,10 @@ file_paths = ["config/docker-compose.yml"]
 # Caddy hot-reloads the Caddyfile from the checkout, but a compose edit still
 # has to land; force-deploy so a config-only push is never silently skipped.
 webhook_force_deploy = true
-
-##
-
-[[stack]]
-name = "docker-registry"
-[stack.config]
-server = "Local"
-project_name = "docker-registry"
-repo = "lorainemg/homelab"
-file_paths = ["registry/docker-compose.yml"]
-links = ["https://registry.sussman.win"]
+# config-agent's image is a private GHCR package. Komodo logs in with the
+# account declared in komodo/registries.config.toml before compose up.
+registry_provider = "ghcr.io"
+registry_account = "lorainemg"
 
 ##
 
@@ -61,6 +69,7 @@ server = "Local"
 project_name = "home-assistant"
 repo = "lorainemg/homelab"
 file_paths = ["home-assistant/docker-compose.yml"]
+links = ["https://homeassistant.sussman.win", "http://${HOMELAB_LAN_IP}:8123"]
 
 ##
 
@@ -71,6 +80,7 @@ server = "Local"
 project_name = "immich"
 repo = "lorainemg/homelab"
 file_paths = ["immich/docker-compose.yml"]
+links = ["https://immich.sussman.win", "http://${HOMELAB_LAN_IP}:2283"]
 
 ##
 
@@ -81,6 +91,7 @@ server = "Local"
 project_name = "librechat"
 repo = "lorainemg/homelab"
 file_paths = ["librechat/docker-compose.yml"]
+links = ["https://librechat.sussman.win"]
 # LibreChat reads its YAML once at boot, so a config-only commit needs both a
 # forced deploy and a restart, or the API keeps serving the old config.
 webhook_force_deploy = true
@@ -92,18 +103,55 @@ post_deploy.shell_mode = false
 ##
 
 [[stack]]
+name = "code-interpreter"
+[stack.config]
+server = "Local"
+project_name = "code-interpreter"
+repo = "lorainemg/homelab"
+file_paths = ["code-interpreter/docker-compose.yml"]
+# No links: nothing here is reachable from outside its Docker networks. Only
+# LibreChat talks to it. No config is mounted from the checkout either, so
+# Komodo's default compose-file diff is enough and no forced deploy is needed.
+
+##
+
+[[stack]]
 name = "monitoring"
 [stack.config]
 server = "Local"
 project_name = "monitoring"
 repo = "lorainemg/homelab"
 file_paths = ["monitoring/docker-compose.yml"]
+# Grafana is the only service here with a public hostname; Prometheus (9090)
+# is LAN-only.
+links = [
+  "https://grafana.sussman.win",
+  "http://${HOMELAB_LAN_IP}:3000",
+  "http://${HOMELAB_LAN_IP}:9090",
+]
 # Same reason as librechat: these four read their config files at startup only.
 webhook_force_deploy = true
 post_deploy.command = """
 docker restart prometheus promtail tempo otel_collector
 """
 post_deploy.shell_mode = false
+
+##
+
+[[stack]]
+name = "ci-runner"
+[stack.config]
+server = "Local"
+project_name = "ci-runner"
+repo = "lorainemg/homelab"
+file_paths = ["ci-runner/docker-compose.yml"]
+# No links: nothing is published. The runner only dials out to GitHub.
+# The runner image is built here on the server from ci-runner/runner/, and an
+# edit there changes no compose file, so it needs both the build and a forced
+# deploy to land. When nothing changed, the build is a cache hit and `up -d`
+# leaves the containers alone, so a job in progress survives unrelated pushes.
+run_build = true
+webhook_force_deploy = true
 
 ##
 
@@ -116,5 +164,8 @@ repo = "lorainemg/homelab"
 file_paths = ["t3-code/docker-compose.yml"]
 # Image changes keep Compose identical; the CI trigger must still pull/recreate.
 webhook_force_deploy = true
-# CI builds the runtime before calling this listener. Do not add a GitHub
-# stack webhook: it would race the build. No checkout-mounted runtime config.
+registry_provider = "ghcr.io"
+registry_account = "lorainemg"
+links = ["https://t3.sussman.win"]
+# CI builds both images before the shared deploy action. No direct GitHub
+# Stack webhook: it would race the builds. No checkout-mounted runtime config.

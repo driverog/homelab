@@ -9,12 +9,45 @@
 #
 # Schema reference: https://www.librechat.ai/docs/configuration/librechat_yaml
 
-# Required. Matches the CONFIG_VERSION LibreChat v0.8.7 ships with; a newer
-# app version may expect a newer value here.
-version: 1.3.13
+# Required. Matches the CONFIG_VERSION LibreChat v0.8.9-rc1 ships with; a newer
+# app version may expect a newer value here. Read the config changelogs
+# between the two (librechat.ai/changelog/config_v1.3.x) before bumping it.
+# 1.3.18 marks nothing breaking for a single replica.
+version: 1.3.18
 cache: true
 
 endpoints:
+  # Which tools and attachment routes LibreChat offers. Listing them replaces
+  # the release's default list rather than editing it (packages/data-provider
+  # config.ts, agentsEndpointSchema), so this is the whole set, and a new
+  # default capability in a future release stays off until it is added here.
+  # Compare against `defaultAgentCapabilities` on every upgrade. Left out on
+  # purpose (2026-10-15):
+  #   - context ("Upload as Text") and ocr: documents are read in the code
+  #     sandbox instead, so the rag_api parser and its pgvector store are gone.
+  #   - file_search: vector retrieval, which needs that same RAG service.
+  # programmatic_tools is also absent from upstream's default; it needs a
+  # newer Code Interpreter API than this stack pins.
+  agents:
+    capabilities:
+      - deferred_tools
+      - execute_code
+      - web_search
+      - artifacts
+      - subagents
+      - actions
+      - skills
+      # New defaults in v0.8.8, kept on purpose: the model can save and recall
+      # memories about you (see `memory:` below), and can stop mid-task to
+      # ask you a question instead of guessing.
+      - memory
+      - ask_user_question
+      - tools
+      # Dropped from upstream's default in v0.8.9, which deprecates authoring
+      # agent chains. Still valid, so listing it keeps chains on; whether to
+      # follow upstream is undecided (2026-10-25).
+      - chain
+
   # Microsoft Foundry, reached through its v1 API — the OpenAI-compatible
   # surface (https://<resource>.openai.azure.com/openai/v1), not the classic
   # per-deployment one. That is why this is a `custom` endpoint rather than
@@ -30,7 +63,7 @@ endpoints:
       # URL — hostname included — is deliberately kept out of this repo:
       # nothing here identifies the Azure resource.
       baseURL: "${AZURE_BASE_URL}"
-      apiKey: "${AZURE_API_KEY}"
+      apiKey: "${FOUNDRY_API_KEY}"
       models:
         # `default` is required by the schema (min 1 entry), but `fetch` makes
         # LibreChat call GET <baseURL>/models on startup and replace this list
@@ -45,13 +78,68 @@ endpoints:
       titleModel: "current_model"
       modelDisplayLabel: "Foundry"
 
+# A simple chat: people pick from the agents shared with them, and nothing
+# else. The model menu offers only the "Agents" endpoint, which LibreChat fills
+# per user with exactly the agents that user can access (ACL-filtered), so
+# sharing a new agent in the UI is all it takes, with no commit per agent.
+# Foundry models stay reachable only *through* agents, whose model is chosen
+# in the Agent Builder.
+#
+# This shapes the UI and is not enforced by the server: without
+# `enforce: true` a hand-written API request can still name Foundry directly.
+# Enforcing it would mean listing every agent here, which defeats the point.
+modelSpecs:
+  addedEndpoints: [agents]
+  # Don't auto-select a spec: the only one below is a hidden placeholder, so
+  # new chats open on whatever each person used last.
+  prioritize: false
+  # A placeholder, not an agent. v0.8.8 discards the whole `modelSpecs`
+  # section when `list` is empty (processModelSpecs returns early), and
+  # `addedEndpoints` goes with it, which is why #23's menu still offered
+  # Foundry. One spec keeps the section alive; `showInMenu: false` makes
+  # /api/config strip it (excludeHiddenModelSpecs) while keeping
+  # `addedEndpoints`. It names no agent, so no agent IDs live in this repo.
+  list:
+    - name: agents-only
+      label: Agents
+      showInMenu: false
+      preset:
+        endpoint: agents
+
+interface:
+  # `addedEndpoints` only takes effect with the model menu on; set it
+  # explicitly rather than relying on v0.8.8 inferring it.
+  modelSelect: true
+  # Nothing to tune from the chat box; tuning belongs to the agent.
+  presets: false
+  parameters: false
+  # No `agents:` block on purpose. v0.8.8 writes explicit `interface.agents`
+  # values into *both* the USER and ADMIN roles on every startup
+  # (updateInterfacePermissions), so `create: false` here also took Agent
+  # Builder away from the admin (#23). Agent permissions per role live in the
+  # roles collection instead, set once; without explicit config, startup
+  # preserves them: USER create=false, ADMIN create=true.
+
+# Inline memory only: the chat model itself calls memory tools to save and
+# recall what it should remember about you, and Settings > Personalization can
+# switch it off. The section must exist for the `memory` capability to work
+# (an absent section reads as disabled). No `agent:` block on purpose: that
+# is v0.8.8's opt-in automatic extraction, a second model pass after every
+# message, and it would need a Foundry deployment name committed here.
+memory:
+  personalize: true
+
 fileConfig:
   endpoints:
     # Keyed `default` rather than by endpoint name: it applies to every
     # endpoint, so renaming the one above cannot silently drop these limits.
     default:
-      # Images go straight to the vision model; Office and PDF files are parsed
-      # by the rag_api container first (see the compose file).
+      # Images and PDFs can go straight to the model ("Upload to Provider");
+      # anything else goes to the code sandbox ("Upload to Code Environment").
+      # v0.8.8 replaces that menu with automatic routing whose fallback for
+      # other files is extracted text, the `context` path removed above.
+      # Keep the menu.
+      legacyFileUploadUX: true
       fileLimit: 10
       fileSizeLimit: 20 # MB
       totalSizeLimit: 50 # MB

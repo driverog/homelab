@@ -8,9 +8,10 @@ Grafana/Prometheus/Loki/Tempo stack.
 Everything needed to rebuild the server from scratch lives in this repo.
 Pushing to `main` deploys — but CI is no longer the deployer. Komodo checks
 this repo out *on the server* and runs `docker compose` there, triggered by a
-GitHub webhook. GitHub Actions builds the images that need
-building (`config-agent`, `t3-code`, and its catalog adapter) and then tells Komodo to deploy, in that order, so an
-image is never pulled before it exists. Only the data stays on the machine, and
+GitHub webhook. GitHub Actions builds the owned images
+(`config-agent`, `t3-code`, and `t3-code-catalog`) and then tells Komodo to deploy, in that order, so an
+image is never pulled before it exists; a second job renders the Stack
+definitions in `komodo/stacks.toml` and pushes them into Komodo's sync. Only the data stays on the machine, and
 each stack's secrets live in a `.env` beside its checkout rather than in GitHub.
 For stacks that interpolate those values into Compose, Komodo's normalized
 config log can still contain them; LibreChat's secret delivery is not yet
@@ -35,18 +36,20 @@ flowchart LR
         HA[Home Assistant]
         GRAFANA[Grafana]
         KOMODO[Komodo]
-        REGISTRY[Docker registry]
         LIBRECHAT[LibreChat]
         T3[T3 Code]
+        GROUPSPLIT[GroupSplit]
+        TV[tv]
     end
 
     CADDY --> IMMICH
     CADDY --> HA
     CADDY --> GRAFANA
     CADDY --> KOMODO
-    CADDY --> REGISTRY
     CADDY --> LIBRECHAT
     CADDY --> T3
+    CADDY --> GROUPSPLIT
+    CADDY --> TV
 
     subgraph voice[Local voice & AI]
         WHISPER[Whisper STT]
@@ -75,13 +78,21 @@ flowchart LR
     TEMPO --> GRAFANA
     PROM -.scrapes.-> HA
     PROM -.scrapes.-> IMMICH
-    REGISTRY -->|pulls| BOT
+    GHCR[GitHub Container Registry] -.pulls.-> BOT
 ```
 
 No inbound ports are open on the router: `cloudflared` maintains an
-outbound-only tunnel to Cloudflare, which routes `*.{domain}` hostnames to
+outbound-only tunnel to Cloudflare, which routes published hostnames to
 Caddy, which reverse-proxies to each service over a shared Docker bridge
-network (`internal`). TLS terminates at Cloudflare's edge. The tunnel runs
+network (`internal`). DNS is a wildcard `*.{domain}` CNAME at the tunnel, so
+what actually decides whether a hostname is public is the tunnel's own ingress
+list (Zero Trust → Networks → Tunnels → Public Hostnames), which ends in
+`http_status:404` — publishing a service means adding it *there* as well as in
+the Caddyfile. TLS terminates at Cloudflare's edge, so every site block is
+`http://` and origins see plain HTTP — an app that decides anything from the
+request scheme (secure cookies, redirect URLs) has to be told the real one, and
+Caddy overwrites `X-Forwarded-Proto` with the scheme it was reached on unless
+`trusted_proxies` says otherwise. The tunnel runs
 in its own host-managed compose, separate from every control plane, so no
 deploy — CI's or Komodo's — can take down the route used to repair it.
 
@@ -89,30 +100,55 @@ deploy — CI's or Komodo's — can take down the route used to repair it.
 
 | Stack | What it runs | Why |
 |---|---|---|
-| [config/](config/) | Caddy 2.8 + config-agent | Reverse proxy for every published service, plus the one container that copies repo config (HA yaml, mosquitto.conf) into the live dirs and pushes UI edits back to git. Deployed by Komodo; CI builds `config-agent` before triggering the deploy |
+| [config/](config/) | Caddy 2.8 + config-agent | Reverse proxy for every published service, plus the one container that copies repo config (HA yaml, mosquitto.conf) into the live dirs and pushes UI edits back to git. Deployed by Komodo; CI builds `config-agent` before the shared Komodo deploy action |
 | [immich/](immich/) | Immich v3, Postgres (pgvector), Valkey, ML service | Self-hosted Google Photos replacement with on-device ML. Deployed by Komodo from this repo on a GitHub webhook, not by CI |
 | [home-assistant/](home-assistant/) | Home Assistant, Mosquitto, Whisper, Piper, Ollama | Smart home with a fully local voice assistant pipeline (STT → LLM → TTS). Deployed by Komodo from this repo on a GitHub webhook, not by CI; `ha-config/` and `mosquitto/` are synced separately by config-agent |
 | [monitoring/](monitoring/) | Prometheus, Grafana, Loki, Tempo, OTel Collector, Promtail, cAdvisor, node-exporter | Metrics, logs, and traces for the host and every container. Deployed by Komodo from this repo on a GitHub webhook, not by CI; each service's config is bind-mounted from the checkout rather than baked into an image |
-| [registry/](registry/) | Docker Registry 2 | Private image registry for my own builds. Deployed by Komodo from this repo on a GitHub webhook, not by CI — the first stack to move |
 | [tunnel/](tunnel/) | cloudflared | The Cloudflare Tunnel every published service is reached through. Host-managed, never deployed — a bad deploy of the stack holding the tunnel would remove the path used to repair it |
 | [komodo/](komodo/) | Komodo Core + Periphery + MongoDB | The control plane: clones this repo on the server and deploys every stack above from it. Host-managed, never CI-deployed |
-| [t3-code/](t3-code/) | T3 Code v0.1.5, Codex 0.166.0, Foundry catalog adapter | Repo-built images; Komodo deployment after CI builds both. Direct pairing through Caddy/Cloudflare at t3.sussman.win; awaiting authorized rollout |
-| [librechat/](librechat/) | LibreChat, MongoDB, Meilisearch, RAG parser + pgvector | Chat front-end over a Microsoft Foundry deployment. A Komodo-owned stack with checkout-mounted config; secret delivery remains under evaluation |
+| [t3-code/](t3-code/) | T3 Code v0.1.5, Codex 0.166.0, Foundry catalog proxy | CI builds both images before Komodo deploys; direct pairing through Caddy/Cloudflare at t3.sussman.win; awaiting authorized rollout |
+| [librechat/](librechat/) | LibreChat, MongoDB, Meilisearch | Chat front-end over a Microsoft Foundry deployment. A Komodo-owned stack with checkout-mounted config; secret delivery remains under evaluation |
+| [code-interpreter/](code-interpreter/) | LibreChat Code Interpreter v1.10.3 (API, worker, KVM sandbox runner, egress gateway, file and tool-call servers), Redis, Floci S3 | The sandbox behind LibreChat's "Run code" and "Upload to Code Environment": each execution runs in its own libkrun microVM with no network. Only LibreChat can reach it, over `librechat-codeapi`. Deployed by Komodo from this repo on a GitHub webhook |
+| [ci-runner/](ci-runner/) | GitHub Actions runner 2.338 (official image + Compose), Docker-in-Docker 29.9 | A self-hosted runner for a private repo, so its Actions jobs run here instead of on GitHub's machines. Jobs get a private Docker daemon, never the server's. Deployed by Komodo from this repo, which also builds the runner image on the server — see [The self-hosted runner](#the-self-hosted-runner-ci-runner) |
 
-One more stack runs on the server but is deliberately **not** defined here:
+Three more stacks run on the server but are deliberately **not** defined here.
+The first,
 [traktv-tg-bot](https://github.com/lorainemg/traktv-tg-bot) (my Telegram bot
-for Trakt.tv + Postgres 17 + Aspire dashboard) generates its compose file
+for Trakt.tv + Postgres 17 + Aspire dashboard), generates its compose file
 with .NET Aspire and deploys itself from its own repo's CI through the Komodo
-API: a `trakt-tg-bot` Stack in `file_contents` mode, filled and deployed by CI
-with a service-user key that has Write on that one stack and nothing else —
-which is why the empty Stack shell itself is seeded by `scripts/bootstrap.sh`
-(the narrow key cannot create stacks, and no sync TOML may declare this one:
-sync resets any field it doesn't declare, and this Stack's contents are CI's).
+API: a `trakt-tg-bot` Stack in `file_contents` mode that CI creates on its
+first run if missing, then fills and deploys on every push. CI holds a key for
+the `trakt-tg-bot-ci` service user, which has Read + Attach on the server
+(what creating a stack there needs — Komodo lets non-admins create stacks
+unless `KOMODO_DISABLE_NON_ADMIN_CREATE` is set) and is granted Write on the
+stack automatically as its creator. No sync TOML may declare this Stack: sync
+resets any field it doesn't declare, and this Stack's contents are CI's.
 Beyond that seam this repo only documents it (the monitoring stack joins its
 network to collect telemetry). One sharp edge to know: Aspire derives the Postgres volume
 name from an apphost hash, so an Aspire CLI update can silently point the stack
 at a fresh empty volume — the old data survives under the previous name, and
 the fix is naming the volume explicitly in the AppHost.
+
+The second is **group-split** (`group-split-web`, `api`, `keycloak`, Postgres
+and an Aspire dashboard), which follows the same pattern from its own repo's
+CI. Its Stack is likewise absent from `komodo/stacks.toml` for the same reason
+the bot's is, and unlike the bot it *is* published: its `web` container joins
+`internal`, so [config/caddy/Caddyfile](config/caddy/Caddyfile) reverse-proxies
+`groupsplit.<domain>` to `group-split-web:8080`. That one line is the whole
+seam — the compose file, the image tags and the other three containers belong
+to that repo. Its Keycloak is not published, so browser-facing login is not
+reachable from outside the LAN yet (see [LEARNING.md](LEARNING.md)).
+
+The third is **tv**, a single container (`tv-addon`) in a Stack whose compose
+file is written in Komodo's UI and kept nowhere else: no repo holds it and no
+CI writes it, so the only copies are Komodo's database and its nightly backups
+(`/etc/komodo/backups` on the host). It stays out of `komodo/stacks.toml` for
+the same reason as the other two. Komodo pulls its private image with the same
+`lorainemg` GHCR account as `config-agent`, and it is the one Stack with Auto
+Update on: the nightly Global Auto Update procedure (03:00) redeploys it when
+its image tag moves. Like group-split it joins `internal`, and
+[config/caddy/Caddyfile](config/caddy/Caddyfile) publishes `tv.<domain>` to
+`tv-addon:7000`. Its state lives in the `tv_data` volume.
 
 Highlights:
 
@@ -123,19 +159,22 @@ Highlights:
   OpenTelemetry Collector that fans out to Tempo, Loki and an Aspire
   dashboard; Prometheus scrapes the host, every container (cAdvisor), Home
   Assistant and Immich; Grafana ties it all together.
-- **Self-hosted CI artifact flow** — the
-  [Trakt bot](https://github.com/lorainemg/traktv-tg-bot)'s images are built
-  by .NET Aspire's deployment pipeline in GitHub Actions and pushed to the
-  self-hosted registry the server then pulls from.
+- **CI artifact flow through GHCR** — the
+  [Trakt bot](https://github.com/lorainemg/traktv-tg-bot)'s and
+  [GroupSplit](https://github.com/Sussman-Club/group-split)'s images are built
+  by .NET Aspire's deployment pipeline in GitHub Actions and pushed to private
+  GHCR packages. Komodo logs the server in with a read-only token before each
+  pull; the account is declared in `komodo/registries.config.toml` and the
+  token lives only in the host's `komodo/.env`.
 
 ## Repo layout
 
 ```
 ├── .agents/skills/   agent-readable runbooks (adding-a-stack); .claude/skills symlinks here
-├── .github/workflows/deploy.yml   build owned images → tell Komodo to deploy
+├── .github/workflows/deploy.yml   build config-agent → tell Komodo to deploy
 ├── config/           docker-compose.yml, .env.example
 │   ├── caddy/        Caddyfile, mounted into Caddy straight from the checkout
-│   └── config-agent/ config container: repo → live sync + hourly UI-edit backup
+│   └── config-agent/ the one config container: repo → live sync + hourly UI-edit backup
 ├── immich/           docker-compose.yml, .env.example
 ├── home-assistant/   docker-compose.yml, .env.example
 │   ├── ha-config/    HA yaml config (automations, scripts, scenes, ...)
@@ -145,12 +184,14 @@ Highlights:
 │   ├── promtail/     promtail.yml
 │   ├── tempo/        tempo.yml
 │   └── otelcol/      otel-collector.yml
-├── registry/         docker-compose.yml (deployed by Komodo, not CI)
+├── registry/         docker-compose.yml (retired 2026-09; kept until the old volume is deleted)
 ├── tunnel/           docker-compose.yml (cloudflared), .env.example
-├── komodo/           docker-compose.yml (Core + Periphery + Mongo), .env.example
-├── t3-code/          docker-compose.yml, .env.example, server/, catalog/, pair.py (CI builds → Komodo)
+├── komodo/           docker-compose.yml (Core + Periphery + Mongo), registries.config.toml, .env.example
+├── t3-code/          docker-compose.yml, .env.example, server/, catalog/, pair.py
 ├── librechat/        docker-compose.yml, config/librechat.yaml, .env.example (deployed by Komodo)
-└── scripts/          bootstrap.sh, pre-commit (gitleaks)
+├── code-interpreter/ docker-compose.yml, .env.example (LibreChat's code sandbox, deployed by Komodo)
+├── ci-runner/        docker-compose.yml, runner/ (Dockerfile, entrypoint, job hook), .env.example (Actions runner, built and deployed by Komodo)
+└── scripts/          bootstrap.sh, codeapi-secrets.sh, pre-commit (gitleaks)
 ```
 
 Conventions:
@@ -169,7 +210,9 @@ Conventions:
 - **Secrets never in git.** Each stack's secrets live in a `.env` beside its
   checkout on the server (`/etc/komodo/stacks/<stack>/<stack>/.env`, root-owned
   `600`), placed once by hand and never transmitted. GitHub Actions holds only
-  what CI itself needs: `KOMODO_URL` and `KOMODO_WEBHOOK_SECRET`. The one
+  what CI itself needs: `KOMODO_URL` and an API key for the `homelab-ci`
+  service user, which can write the `homelab` sync and deploy the `config`
+  stack, nothing else (see the CI/CD section for why that is not nothing). The one
   file-based secret (Prometheus's HA token) is materialized at container start
   from an env var by its entrypoint. A gitleaks pre-commit hook backstops it.
 
@@ -185,25 +228,37 @@ Conventions:
    `docker network create internal && docker compose --project-directory tunnel up -d && docker compose --project-directory komodo up -d`.
    Point the tunnel's public hostnames — `komodo.<domain>`, `immich.<domain>`,
    `grafana.<domain>`, … — at `http://caddy:80`.
-4. Set the repo's Actions secrets: `KOMODO_URL` and `KOMODO_WEBHOOK_SECRET`
-   (the value of `KOMODO_WEBHOOK_SECRET` in `komodo/.env`). That is everything
-   CI needs — every other secret lives on the host now.
-5. The Stacks themselves need no clicking: bootstrap pointed Komodo at
-   [komodo/stacks.toml](komodo/stacks.toml) (a ResourceSync) and ran the first
-   sync, which creates every Stack with its `project_name` **exactly** the
+4. Set the repo's Actions secrets: `KOMODO_URL`, and
+   `KOMODO_API_KEY` / `KOMODO_API_SECRET` for a `homelab-ci` service user
+   created by hand in Komodo with Write on the `homelab` sync and Execute on
+   the `config` stack, nothing else. That is everything CI needs — every other
+   secret lives on the host now. The server's LAN address is not a secret and
+   is stated inline in `deploy.yml`'s `vars` input.
+5. The Stacks themselves need no clicking: bootstrap rendered
+   [komodo/stacks.toml](komodo/stacks.toml) (a template — `${HOMELAB_LAN_IP}`
+   comes from the environment you ran bootstrap with) into the `homelab`
+   ResourceSync's contents and
+   ran the first sync, which creates every Stack with its `project_name` **exactly** the
    directory name — so an existing server's volumes (`<project>_<volume>`) are
-   adopted rather than recreated empty — plus the empty `trakt-tg-bot` shell
-   its own repo's CI fills. Per-stack deploy behaviour
+   adopted rather than recreated empty. The `trakt-tg-bot` Stack is the
+   exception: its own repo's CI creates it on first run (see above), which
+   needs the `trakt-tg-bot-ci` service user recreated by hand with an API key
+   and Read + Attach on the server. Per-stack deploy behaviour
    (`webhook_force_deploy`, `post_deploy` restarts for processes that don't
    hot-reload their config) lives in that file too. What remains by hand:
    copy each stack's `.env.example` to
-   `/etc/komodo/stacks/<stack>/<stack>/.env` and fill it in, deploy each
-   Stack, and add the GitHub webhooks — one per prebuilt-image stack at
-   `<KOMODO_URL>/listener/github/stack/<name>/deploy`, plus one at
-   `<KOMODO_URL>/listener/github/sync/homelab/sync` so a push that edits
-   `stacks.toml` applies itself (secret for all: `KOMODO_WEBHOOK_SECRET`).
-   For `config` and `t3-code`, CI calls the Stack listener after building; do
-   not add a direct GitHub Stack webhook that can race the image build.
+   `/etc/komodo/stacks/<stack>/<stack>/.env` and fill it in (except
+   `code-interpreter`'s, and the Code Interpreter half of `librechat`'s: run
+   `scripts/codeapi-secrets.sh` on those two files instead, since they share
+   one keypair), deploy each Stack, and add the GitHub webhooks — one per stack at
+   `<KOMODO_URL>/listener/github/stack/<name>/deploy` (secret:
+   `KOMODO_WEBHOOK_SECRET`, from `komodo/.env` — CI does not hold it, only
+   GitHub's per-stack webhooks use it). The sync needs no webhook: the
+   `sync-komodo` job in `deploy.yml` re-renders and re-runs it on every push
+   that touches `stacks.toml` or `deploy.yml`. `ci-runner`'s `.env` holds a
+   registration token that expires an hour after GitHub issues it, so fetch
+   it right before deploying that Stack; the runner registers itself on
+   first start and the token can then be deleted.
 6. Mosquitto users are the one manual step:
    `docker exec mosquitto mosquitto_passwd -c /mosquitto/config/passwd homeassistant`
 7. LibreChat accounts are the other one. Registration is disabled on a
@@ -211,11 +266,12 @@ Conventions:
    `docker exec -it librechat npm run create-user` — there is never a window
    where the login page accepts signups.
 
-`./scripts/bootstrap.sh` automates steps 3 and 5's Komodo half: it creates the
-shared network, refuses to start if `tunnel/.env` or `komodo/.env` is missing,
-brings up those two stacks, then seeds the control plane — the ResourceSync
-pointing at `komodo/stacks.toml` (running the first sync, which creates every
-Stack) and the empty `trakt-tg-bot` shell. Steps 4-6's remaining hand work
+`HOMELAB_LAN_IP=<server LAN address> ./scripts/bootstrap.sh` automates steps 3
+and 5's Komodo half: it creates the shared network, refuses to start if
+`tunnel/.env` or `komodo/.env` is missing, brings up those two stacks, then
+seeds the control plane — the ResourceSync holding `komodo/stacks.toml`,
+rendered through the same client the CI actions use (`python3` and `jq` are
+its only prerequisites), and runs the first sync, which creates every Stack. Steps 4-6's remaining hand work
 (`.env` files, webhooks, Mosquitto users) finishes the rebuild. If you need a stack up with no
 control plane at all — Komodo itself broken, say — its compose file still runs
 standalone: `docker compose --project-directory <stack> up -d`, with that
@@ -247,30 +303,60 @@ cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 
 ## CI/CD ([deploy.yml](.github/workflows/deploy.yml))
 
-Most stack changes need no image build. Prebuilt-image stacks have a direct
-GitHub webhook to Komodo; a push makes it pull this repo on the server and run
-`docker compose up -d` for that stack.
+Most pushes to `main` never touch a runner. Komodo holds one GitHub webhook per
+stack; a push makes it pull this repo on the server and run `docker compose up
+-d` for that stack, so a config edit reaches the running container with no build
+and no image in between.
 
-CI builds `config-agent` and `t3-code` in separate jobs. Each job builds
-then triggers its own Komodo Stack:
+CI exists for two things that still need a runner. The first is building
+`config-agent`, one job:
 
 1. **Change detection** — [dorny/paths-filter](https://github.com/dorny/paths-filter)
-   checks `config/config-agent/**` or `t3-code/server/**` + `t3-code/catalog/**`.
-   The T3 job also detects Compose changes and deploys those without rebuilding.
+   checks `config/config-agent/**`. If it's untouched, every later step is
+   skipped and the run is green having done nothing.
 2. **Image build** —
    [docker/build-push-action](https://github.com/docker/build-push-action)
-   rebuilds and pushes `ghcr.io/lorainemg/homelab/config-agent` or
-   `ghcr.io/lorainemg/homelab/t3-code` and `t3-code-catalog` (tagged `latest` +
-   commit SHA for rollbacks).
-3. **Deploy trigger** — a signed POST to Komodo's listener for the `config`
-   stack (or `t3-code` after both of its images), in the same job and strictly
-   after the builds, so Komodo can never
-   pull an image GHCR doesn't have yet. The body must carry a `ref` matching
-   the stack's branch: Komodo filters on it and ignores a payload without one
-   while still answering `200`.
+   rebuilds and pushes `ghcr.io/lorainemg/homelab/config-agent` (tagged
+   `latest` + commit SHA for rollbacks).
+3. **Deploy trigger** — the `deploy-stack` action asks Komodo's API to deploy
+   the `config` stack, in the same job and strictly after the build, so Komodo
+   can never pull an image GHCR doesn't have yet. It then polls the resulting
+   Update until it finishes, so a green step means the stack came up — unlike
+   the signed webhook this replaced, which answered `200` on acceptance and
+   never reported an outcome.
 
 `workflow_dispatch` rebuilds and redeploys unconditionally — the
 fresh-server / changed-agent button.
+
+The second job, `sync-komodo`, is how the Stack definitions reach Komodo.
+Komodo never reads `komodo/stacks.toml` from the repo: the file is a template,
+because Komodo's `links` field cannot reference a variable. The `run-sync`
+action renders it — `${HOMELAB_LAN_IP}` comes from the step's own `vars` input,
+so an address that appears in every LAN link is written once per workflow —
+pushes the result into the `homelab` ResourceSync as its contents, runs the
+sync and waits for the result. It re-declares the sync's source fields
+(`repo`, `branch`, `resource_path`) empty on every run, because Komodo prefers
+a repo over its stored contents and would otherwise ignore what CI just
+pushed. It runs when `stacks.toml` or `deploy.yml` changed (the LAN address
+lives in the workflow, so editing it must re-run the sync), or on
+`workflow_dispatch`. Chosen on 2026-09-03 over committing a rendered copy back
+to the repo, to keep a single `stacks.toml` in git.
+
+The deployment and sync jobs hold the same Komodo API key: the `homelab-ci` service user has Write
+on the `homelab` sync and Execute on the `config` and `t3-code` stacks. The sync
+defines every Stack, `post_deploy` commands included, so treat that key as the
+most valuable secret in this repo. CI no longer holds `KOMODO_WEBHOOK_SECRET` —
+the per-stack GitHub webhooks Komodo listens on still use it, but nothing in a
+workflow does.
+
+Neither job hand-rolls any of that. `.github/actions/komodo/` holds three
+composite actions — `deploy-stack`, `update-stack`, `run-sync` — over one
+tested Python client (`client/komodo.py` and `client/cli.py`, standard library
+only, fully type-annotated; `client/tests/` and a strict `mypy` pass run by
+[test-actions.yml](.github/workflows/test-actions.yml) against a stub Komodo).
+The [trakt bot repo](https://github.com/lorainemg/traktv-tg-bot) uses the same
+actions cross-repo, which is why authentication, the create-if-missing probe
+and the Update-polling loop exist once rather than twice.
 
 Config that can't simply be mounted flows through the `config-agent` container
 in the config stack. HA yaml and `mosquitto.conf` are mounted read-only from
@@ -289,6 +375,44 @@ scripts, scenes, helpers) back to this repo once an hour with `[skip ci]`,
 so nothing is lost between deploys. Runtime state (`.storage/`, databases,
 `custom_components/`, Mosquitto's `passwd`) is never touched — back that
 layer up with HA's built-in automatic backups.
+
+### The self-hosted runner (`ci-runner`)
+
+Everything above runs on GitHub's machines, and stays there. `ci-runner` is for
+a different, private repo whose jobs run on this server instead. The runner
+dials out to GitHub and waits for work, so nothing is published and the tunnel
+is not involved. This repo's own CI never uses it, for two reasons: this repo
+is public, and a runner that a public repo can use runs code from strangers'
+pull requests; and the runner is a Stack the sync defines, so CI that depended
+on it could not repair it.
+
+- **Jobs get their own Docker.** `dind` is a private, privileged dockerd. The
+  runner reaches it through a socket in a shared volume and shares its network
+  namespace, so a job that publishes a port on `127.0.0.1` can fetch it. Jobs
+  cannot see the server's containers, but privileged means a fence, not a
+  wall: whoever can push workflows to the served repo should be trusted like
+  root here. dind's bridge and job networks live in `10.200.0.0/24` and
+  `10.201.0.0/16`, because its defaults collide with the LAN and break DNS.
+- **Registered once.** On first start the runner trades the one-hour token in
+  `.env` for its own credentials, kept with its install in the `runner-home`
+  volume. The only credential left on the server can do nothing but take that
+  repo's jobs. Lose the volume, or leave the runner offline for 14 days (GitHub
+  then deletes it), and it needs a fresh token in `.env`; `--replace` takes
+  over the old entry.
+- **Every job starts clean.** One long-lived runner means a job inherits the
+  last one's leftovers, so a job-started hook empties dind first: no
+  containers, volumes, networks or images. Only build cache survives, capped at
+  10 GB. An unchanged image rebuilt in about 5 s in testing.
+- **Capped.** dind gets 4 CPUs and 4 GB (every job container runs inside it),
+  the runner 2 CPUs and 2 GB.
+- **No fallback.** While the server is down, a job aimed at this runner waits,
+  for up to 24 hours, then fails. It does not fall back to GitHub's runners.
+
+The `build-t3-code` job follows the same shared deployment convention. It depends
+on `sync-komodo`, detects `t3-code/server/**` and `t3-code/catalog/**`, publishes
+both images with latest/SHA tags, then runs `deploy-stack`. Compose-only changes
+run the deployment step without rebuilding. This ordering prevents a deployment
+from pulling an image before it exists or targeting a Stack not yet synced.
 
 ## T3 Code remote development
 
@@ -343,12 +467,15 @@ prepare its host state and authorize the rollout before merging.
    `/etc/komodo/stacks/t3-code/t3-code/.env`, root-owned mode 600. The project
    URL and inference URL are separate required settings. Choose the default
    deployment with `CODEX_MODEL`.
-3. After authorizing the merge, confirm ResourceSync creates the `t3-code`
-   Stack with project name `t3-code`. CI builds both images before calling its
-   listener. Do not add a direct GitHub Stack webhook that could race these
-   builds. If the initial CI trigger precedes Stack creation, deploy it from
-   Komodo after both images exist; check the actual Update, not the listener's
-   HTTP status. Compose-only edits use CI's listener without rebuilding.
+3. Before the authorized merge, create an undeployed Komodo Stack shell named
+   `t3-code`, server `Local`, project name `t3-code`, and grant `homelab-ci`
+   Execute on that Stack. After the merge, ResourceSync fills its configuration.
+   CI waits for ResourceSync, builds both images, then uses the shared Komodo
+   deploy action, which waits for the resulting Update. Do not add a direct
+   GitHub Stack webhook that could race these builds. The Stack logs into GHCR
+   with the existing `lorainemg` registry account to pull both images; verify
+   that account can read the new packages. Compose-only edits use the same
+   deploy action without rebuilding.
 4. In the existing Cloudflare Tunnel dashboard, add `t3.sussman.win` targeting
    `http://caddy:80`. The token-managed tunnel's hostname mapping lives in
    Cloudflare, so this remains a manual step. The committed Caddyfile already
