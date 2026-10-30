@@ -444,7 +444,8 @@ embedding and Decision deployments. T3 v0.1.5 capitalizes labels in its picker.
 Persistent paths under `${DATA_ROOT:-/data}/t3-code`:
 
 - `home/` → `/home/t3`: T3 identity, paired sessions, SQLite history, Codex state
-  and downloaded tools. T3 uses `.t3`; Codex uses `.codex`.
+  and downloaded tools. T3 uses `.t3`; Codex uses `.codex`; GitHub CLI stores
+  its login under `.config/gh`.
 - `workspace/` → `/workspace`: repositories and working files, independent of
   Komodo's disposable checkout.
 - `secrets/` → read-only `/run/credentials` in both containers: `foundry-token`.
@@ -505,6 +506,25 @@ builds (keep the Codex version in both Dockerfiles aligned); do not self-update 
 and `CATALOG_IMAGE` to the same previous CI SHA in host `.env`, then deploys.
 Browser automation needs additional Linux libraries and sandbox acceptance;
 it is not covered by the verified text-agent setup.
+
+### GitHub account access
+
+The server image includes `gh`. Authenticate inside the running container as
+the normal `t3` user, not as root:
+
+```sh
+docker exec -it t3-code-t3-code-1 gh auth login --hostname github.com --git-protocol https --web
+docker exec t3-code-t3-code-1 gh auth setup-git
+docker exec t3-code-t3-code-1 gh auth status
+docker exec t3-code-t3-code-1 gh api user --jq .login
+```
+
+Open the device-login URL and enter the code printed by `gh` to authorize your
+GitHub account. The container has no desktop credential store, so `gh` saves
+the credential in the persistent home directory. Keep that directory private
+and its backups protected. HTTPS Git operations use the same login after
+`setup-git`; no token needs to enter Compose or the repository. Git author name
+and email are separate settings: configure them for each cloned repository.
 
 ### Local validation
 
