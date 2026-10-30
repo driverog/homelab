@@ -104,3 +104,17 @@ post_deploy.command = """
 docker restart prometheus promtail tempo otel_collector
 """
 post_deploy.shell_mode = false
+
+##
+
+[[stack]]
+name = "t3-code"
+[stack.config]
+server = "Local"
+project_name = "t3-code"
+repo = "lorainemg/homelab"
+file_paths = ["t3-code/docker-compose.yml"]
+# Image changes keep Compose identical; the CI trigger must still pull/recreate.
+webhook_force_deploy = true
+# CI builds the runtime before calling this listener. Do not add a GitHub
+# stack webhook: it would race the build. No checkout-mounted runtime config.

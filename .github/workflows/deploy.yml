@@ -16,9 +16,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The only stack CI still touches. Every other stack is deployed by Komodo
-  # straight from this repo on GitHub's own webhook — no image, nothing to
-  # build, so CI has no part to play. `config` is the exception because
+  # Build config-agent before triggering its Stack. Prebuilt-image stacks
+  # use direct GitHub webhooks; t3-code has its own ordered job below.
+  # `config` needs this ordering because
   # config-agent is a built image, and Komodo must not pull it until GHCR has
   # it: that ordering is what the trigger step at the bottom exists to enforce.
   build-config-agent:
@@ -67,6 +67,56 @@ jobs:
             | openssl dgst -sha256 -hmac '${{ secrets.KOMODO_WEBHOOK_SECRET }}' \
             | cut -d' ' -f2)
           curl -sf -X POST "${{ secrets.KOMODO_URL }}/listener/github/stack/config/deploy" \
+            -H 'Content-Type: application/json' \
+            -H "X-Hub-Signature-256: sha256=$sig" \
+            -H 'X-GitHub-Event: push' \
+            -d "$body"
+
+  build-t3-code:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: images
+        with:
+          filters: |
+            t3_code:
+              - 't3-code/server/**'
+              - 't3-code/catalog/**'
+            t3_stack:
+              - 't3-code/docker-compose.yml'
+              - 't3-code/deploy.env'
+      - uses: docker/login-action@v3
+        if: github.event_name == 'workflow_dispatch' || steps.images.outputs.t3_code == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        if: github.event_name == 'workflow_dispatch' || steps.images.outputs.t3_code == 'true'
+        with:
+          context: t3-code/server
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/t3-code:latest
+            ghcr.io/${{ github.repository }}/t3-code:${{ github.sha }}
+      - name: Build catalog image
+        uses: docker/build-push-action@v6
+        if: github.event_name == 'workflow_dispatch' || steps.images.outputs.t3_code == 'true'
+        with:
+          context: t3-code/catalog
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/t3-code-catalog:latest
+            ghcr.io/${{ github.repository }}/t3-code-catalog:${{ github.sha }}
+      - name: Tell Komodo to deploy t3-code
+        if: github.event_name == 'workflow_dispatch' || steps.images.outputs.t3_code == 'true' || steps.images.outputs.t3_stack == 'true'
+        run: |
+          body='{"ref":"refs/heads/main"}'
+          sig=$(printf '%s' "$body" \
+            | openssl dgst -sha256 -hmac '${{ secrets.KOMODO_WEBHOOK_SECRET }}' \
+            | cut -d' ' -f2)
+          curl -sf -X POST "${{ secrets.KOMODO_URL }}/listener/github/stack/t3-code/deploy" \
             -H 'Content-Type: application/json' \
             -H "X-Hub-Signature-256: sha256=$sig" \
             -H 'X-GitHub-Event: push' \

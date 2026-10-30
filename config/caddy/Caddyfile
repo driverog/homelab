@@ -24,3 +24,7 @@ http://komodo.sussman.win {
 http://librechat.sussman.win {
     reverse_proxy librechat:3080
 }
+
+http://t3.sussman.win {
+    reverse_proxy t3-code:3773
+}
