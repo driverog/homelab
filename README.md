@@ -444,8 +444,7 @@ embedding and Decision deployments. T3 v0.1.5 capitalizes labels in its picker.
 Persistent paths under `${DATA_ROOT:-/data}/t3-code`:
 
 - `home/` → `/home/t3`: T3 identity, paired sessions, SQLite history, Codex state
-  and downloaded tools. T3 uses `.t3`; Codex uses `.codex`; GitHub CLI stores
-  its login under `.config/gh`.
+  and downloaded tools. T3 uses `.t3`; Codex uses `.codex`.
 - `workspace/` → `/workspace`: repositories and working files, independent of
   Komodo's disposable checkout.
 - `secrets/` → read-only `/run/credentials` in both containers: `foundry-token`.
@@ -509,22 +508,26 @@ it is not covered by the verified text-agent setup.
 
 ### GitHub account access
 
-The server image includes `gh`. Authenticate inside the running container as
-the normal `t3` user, not as root:
+The server image includes `gh`. Create a secret Komodo variable named
+`T3_GH_TOKEN`, then supply `GH_TOKEN=[[T3_GH_TOKEN]]` in the T3 Stack's
+Environment. Preserve the existing settings from the host `.env` when filling
+this field: Komodo writes the Environment contents to the Stack's `.env`.
+Keep the real token out of git. Use a GitHub token authorized for the repositories
+and operations you want the agent to access.
+
+Compose passes `GH_TOKEN` to T3 and its agent processes. GitHub CLI uses it
+automatically; startup configures `gh` as Git's HTTPS credential helper. No
+device login or additional credential file is needed. An empty token leaves
+GitHub authentication disabled. After deploying, verify the account:
 
 ```sh
-docker exec -it t3-code-t3-code-1 gh auth login --hostname github.com --git-protocol https --web
-docker exec t3-code-t3-code-1 gh auth setup-git
 docker exec t3-code-t3-code-1 gh auth status
 docker exec t3-code-t3-code-1 gh api user --jq .login
 ```
 
-Open the device-login URL and enter the code printed by `gh` to authorize your
-GitHub account. The container has no desktop credential store, so `gh` saves
-the credential in the persistent home directory. Keep that directory private
-and its backups protected. HTTPS Git operations use the same login after
-`setup-git`; no token needs to enter Compose or the repository. Git author name
-and email are separate settings: configure them for each cloned repository.
+Rotate the Komodo variable and redeploy to replace the token in the container.
+Git author name and email are separate settings: configure them for each cloned
+repository.
 
 ### Local validation
 
