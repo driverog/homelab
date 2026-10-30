@@ -207,9 +207,9 @@ start of a session; update when a concept lands or a new gap appears.
   native `models` catalog. The Foundry project deployment-list API accepted the
   existing key, correcting the earlier assumption that management login was
   necessary. The private adapter translates requests without polling or cache.
-  Luna/Sol capability templates remain curated, with copied instruction prompts
-  removed. Other model families and picker updates after actual Azure deployment
-  changes remain gaps. The token is mounted as a runtime file so it does not
+  The catalog image extracts Codex's bundled metadata during its build, so no
+  model-template file is maintained. Models absent from that bundled catalog
+  and picker updates after actual Azure deployment changes remain gaps. The token is mounted as a runtime file so it does not
   expand into Komodo's Compose config log. No production deployment was performed.
 
 - Komodo's Resource Sync (stacks declared as TOML in the repo) — deliberately

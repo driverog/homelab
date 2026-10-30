@@ -18,7 +18,9 @@ RUN set -eu; \
     echo "$checksum  /tmp/t3.tar.gz" | sha256sum -c -; \
     mkdir /opt/t3; tar xzf /tmp/t3.tar.gz -C /opt/t3 --strip-components=1; \
     ln -s /opt/t3/t3 /usr/local/bin/t3; rm /tmp/t3.tar.gz
-RUN npm install -g @openai/codex@0.166.0
+ARG CODEX_VERSION=0.166.0
+# Keep aligned with ../catalog/Dockerfile.
+RUN npm install -g @openai/codex@${CODEX_VERSION}
 COPY configure.py /opt/t3/configure.py
 RUN groupadd -g 1000 t3 && useradd -u 1000 -g t3 -m t3 \
     && mkdir /workspace && chown t3:t3 /workspace

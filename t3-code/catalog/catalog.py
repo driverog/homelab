@@ -9,11 +9,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-def translate(deployments, templates):
-    by_model = {model['slug']: model for model in templates['models']}
+def translate(deployments, bundled):
+    by_model = {model['slug']: model for model in bundled['models']}
     models, omitted = [], []
     for deployment in deployments:
-        if deployment.get('type') != 'ModelDeployment':
+        if deployment.get('type') != 'ModelDeployment' or deployment.get('capabilities', {}).get('chat_completion') not in (True, 'true'):
             continue
         template = by_model.get(deployment.get('modelName'))
         if template is None:
@@ -55,10 +55,10 @@ def fetch_inventory(project, token):
 def main():
     project = os.environ['FOUNDRY_PROJECT_URL']
     token = Path(os.environ['CODEX_API_TOKEN_FILE']).read_text().strip()
-    templates = json.loads(Path('/opt/catalog/model-template.json').read_text())
+    bundled = json.loads(Path('/opt/catalog/bundled-models.json').read_text())
 
     def fetch():
-        catalog, omitted = translate(fetch_inventory(project, token), templates)
+        catalog, omitted = translate(fetch_inventory(project, token), bundled)
         print(f'Catalog fetched: {len(catalog["models"])} supported; omitted without metadata: {omitted}', flush=True)
         return catalog
 

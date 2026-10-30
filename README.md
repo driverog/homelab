@@ -307,13 +307,15 @@ Each authenticated catalog request fetches current deployments. There is no
 adapter polling, cooldown, cache, or manual-refresh endpoint; Codex owns its
 client cache and request timing. Catalog has its own bridge and no Caddy route.
 
-Deployment names come from Foundry. Model capability metadata is still supplied
-by the repository: Luna and Sol have templates taken from the previously
-working host catalog, with copied instruction prompts removed, yielding `foundry-gpt-6-luna` and `foundry-gpt-6.1-sol`.
-Other model families are omitted until their metadata is verified; the existing
-GPT-5.2, embedding and Decision deployments are not advertised. New deployment
-aliases of a supported family are discovered automatically. T3 v0.1.5 applies
-capitalization to these labels in its model picker.
+Deployment names come from Foundry. The catalog image extracts native metadata
+from the same pinned Codex release during its build (`codex debug models
+--bundled`); no model template is maintained in this repository. The proxy
+filters on Foundry's chat-completion capability and matches its `modelName`
+to that bundled metadata, preserves the deployment
+name as the model ID, and labels it `foundry-<deployment>`. Luna and Sol work
+this way. Models absent from Codex's bundled catalog are omitted rather than
+assigned guessed capabilities; this includes the resource's older GPT-5.2,
+embedding and Decision deployments. T3 v0.1.5 capitalizes labels in its picker.
 
 Persistent paths under `${DATA_ROOT:-/data}/t3-code`:
 
@@ -371,8 +373,8 @@ prepare its host state and authorize the rollout before merging.
 Back up `home` and `workspace`; stop T3 while snapshotting its SQLite state.
 Restore ownership and paths. Never copy this home to create another running
 machine: it contains identity and sessions. Keep the runtime token separately
-in a secret store. Upgrade pinned T3/Codex and catalog metadata through image
-builds; do not self-update inside the container. Rollback sets both `T3_IMAGE`
+in a secret store. Upgrade pinned T3/Codex through image
+builds (keep the Codex version in both Dockerfiles aligned); do not self-update inside the container. Rollback sets both `T3_IMAGE`
 and `CATALOG_IMAGE` to the same previous CI SHA in host `.env`, then deploys.
 Browser automation needs additional Linux libraries and sandbox acceptance;
 it is not covered by the verified text-agent setup.
@@ -410,3 +412,10 @@ Upstream evidence:
 No T3-maintained standalone Docker server image was found in the checked
 upstream docs/workflows. Docker's official `sbx/t3code-kit` installs T3 into an
 agent sandbox for desktop-managed SSH; this stack uses its own standalone image.
+
+Foundry's model-detail API was checked for Luna and Sol: it supplies general
+inference/chat/embedding flags, not reasoning levels, context limits or Codex
+shell/tool metadata. The documented [AI Inference `/info` API](https://learn.microsoft.com/en-us/python/api/azure-ai-inference/azure.ai.inference.chatcompletionsclient?view=azure-python-preview)
+is not supported for Azure OpenAI endpoints and only exposes basic model identity.
+No documented endpoint supplying the complete Codex catalog was found; using
+Codex's bundled metadata avoids maintaining a duplicate template in this repo.
